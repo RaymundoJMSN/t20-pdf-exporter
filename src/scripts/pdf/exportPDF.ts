@@ -469,9 +469,6 @@ function formatArmadura(item: FoundryItemLike): ArmaduraSummary {
 // 6 templates). Coordinates are PDF userspace: (x1, y1) bottom-left,
 // (x2, y2) top-right.
 const OVERFLOW_RECT = { x: 35.5, y: 43.3, x2: 536.8, y2: 717.0 };
-const OVERFLOW_PADDING = 6;
-const OVERFLOW_FONT_SIZE = 9;
-const OVERFLOW_LINE_HEIGHT = 11;
 // Char count above which the main sheet field starts clipping even at 8pt;
 // content past this cut goes to dedicated overflow pages.
 const MAIN_FIELD_CAP = 3000;
@@ -495,76 +492,94 @@ function splitAtLineBoundary(text: string, cap: number): [string, string] {
   return [text.slice(0, cut), text.slice(cut).replace(/^\n/, "")];
 }
 
+/** Split `text` into chunks of up to `capPerPage` chars, each cut at the
+ *  last newline before the cap (or hard at the cap if no good break). */
+function chunkByLineBoundary(text: string, capPerPage: number): string[] {
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > capPerPage) {
+    let cut = remaining.lastIndexOf("\n", capPerPage);
+    if (cut < capPerPage * 0.5) cut = capPerPage;
+    chunks.push(remaining.slice(0, cut));
+    remaining = remaining.slice(cut).replace(/^\n+/, "");
+  }
+  if (remaining.length > 0) chunks.push(remaining);
+  return chunks;
+}
+
+/** Auto font size for an overflow form field based on chunk length. Mirrors
+ *  the heuristic used by `autoFontSize` for the main fields so the rendered
+ *  text on overflow pages looks the same as the main page. */
+function applyAutoFontSize(field: ReturnType<PDFForm["getTextField"]>, len: number): void {
+  if (len > 9000) field.setFontSize(8);
+  else if (len > 6000) field.setFontSize(9);
+  else if (len > 4000) field.setFontSize(10);
+  else if (len > 2500) field.setFontSize(11);
+  else field.setFontSize(12);
+}
+
 /** Copy an overflow-template page into `pdfDoc`, strip its form-field
- *  annotations (to avoid colliding with main-sheet fields of the same
- *  name), insert at `insertAtIdx`, and draw `chunkLines` inside the
- *  field rectangle.  Returns the inserted page. */
+ *  annotations (so the duplicated names don't shadow-write the main sheet's
+ *  fields), insert at `insertAtIdx`, then add a FRESH multi-line text field
+ *  with a unique name at the same rect. The new field is editable in the
+ *  PDF viewer and uses the standard Helvetica font, matching the look of
+ *  the original `Historico`/`Atualização` fields. */
 async function insertOverflowTemplatePage(
   pdfDoc: PDFDocument,
   srcBytes: ArrayBuffer,
   insertAtIdx: number,
-  chunkLines: string[],
-  font: PDFFont,
+  chunkText: string,
+  baseFieldName: string,
+  overflowIdx: number,
 ): Promise<void> {
   const src = await PDFDocument.load(srcBytes);
   const [copied] = await pdfDoc.copyPages(src, [0]);
-  // Drop all annotations on the copy — that removes the duplicate form
-  // fields so setText("Historico") on the form doesn't also overwrite
-  // these pages.
+  // Strip all form-field annotations on the copy. The source template carries
+  // a `Historico` / `Atualização` widget with the same name as the main sheet;
+  // if we leave it, setText on the main field would also write here (and vice
+  // versa). We replace it with a freshly-created field that has a unique name.
   copied.node.delete(PDFName.of("Annots"));
   pdfDoc.insertPage(insertAtIdx, copied);
 
-  let y = OVERFLOW_RECT.y2 - OVERFLOW_PADDING - OVERFLOW_FONT_SIZE;
-  for (const line of chunkLines) {
-    if (line) {
-      copied.drawText(line, {
-        x: OVERFLOW_RECT.x + OVERFLOW_PADDING,
-        y,
-        font,
-        size: OVERFLOW_FONT_SIZE,
-      });
-    }
-    y -= OVERFLOW_LINE_HEIGHT;
-  }
+  const destForm = pdfDoc.getForm();
+  const uniqueName = `${baseFieldName}_ovr_${overflowIdx}`;
+  const field = destForm.createTextField(uniqueName);
+  field.enableMultiline();
+  field.setText(sanitize(chunkText));
+  applyAutoFontSize(field, chunkText.length);
+  field.addToPage(copied, {
+    x: OVERFLOW_RECT.x,
+    y: OVERFLOW_RECT.y,
+    width: OVERFLOW_RECT.x2 - OVERFLOW_RECT.x,
+    height: OVERFLOW_RECT.y2 - OVERFLOW_RECT.y,
+    borderWidth: 0,
+  });
 }
 
 /** Paginate `text` into one or more copies of the given overflow template,
- *  inserted starting at `insertAtIdx`.  Each insertion bumps subsequent
- *  page indices by 1, so callers should track the number returned and
- *  shift their next insert point accordingly.  Returns the count of
- *  pages added. */
+ *  inserted starting at `insertAtIdx`. Each insertion bumps subsequent
+ *  page indices by 1; callers must shift their own next insert point by
+ *  the returned count. */
 async function appendOverflowTemplatePages(
   pdfDoc: PDFDocument,
   srcBytes: ArrayBuffer,
   text: string,
   insertAtIdx: number,
+  baseFieldName: string,
 ): Promise<number> {
   const sanText = sanitize(text);
   if (!sanText.trim()) return 0;
 
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const maxWidth = OVERFLOW_RECT.x2 - OVERFLOW_RECT.x - OVERFLOW_PADDING * 2;
-  const availableHeight = OVERFLOW_RECT.y2 - OVERFLOW_RECT.y - OVERFLOW_PADDING * 2;
-  const linesPerPage = Math.floor(availableHeight / OVERFLOW_LINE_HEIGHT);
-
-  // Pre-wrap every source line to the field width.
-  const allLines: string[] = [];
-  for (const raw of sanText.split("\n")) {
-    if (raw === "") {
-      allLines.push("");
-      continue;
-    }
-    allLines.push(...wrapLine(raw, font, OVERFLOW_FONT_SIZE, maxWidth));
-  }
-
-  // Split into pages.
-  const chunks: string[][] = [];
-  for (let i = 0; i < allLines.length; i += linesPerPage) {
-    chunks.push(allLines.slice(i, i + linesPerPage));
-  }
-
+  const chunks = chunkByLineBoundary(sanText, MAIN_FIELD_CAP);
   for (let i = 0; i < chunks.length; i++) {
-    await insertOverflowTemplatePage(pdfDoc, srcBytes, insertAtIdx + i, chunks[i], font);
+    await insertOverflowTemplatePage(
+      pdfDoc,
+      srcBytes,
+      insertAtIdx + i,
+      chunks[i],
+      baseFieldName,
+      i + 1,
+    );
   }
   return chunks.length;
 }
@@ -1029,6 +1044,7 @@ export async function buildAndOpenPDF(
         podBytes,
         podOverflow,
         PODERES_PAGE_IDX + 1,
+        "Historico",
       );
     } else {
       // Fallback: plain annex page (template missing).
@@ -1040,7 +1056,7 @@ export async function buildAndOpenPDF(
     const magBytes = await fetchTemplateOptional(magTplFile);
     if (magBytes) {
       const insertAt = MAGIAS_PAGE_IDX + podPagesAdded + 1;
-      await appendOverflowTemplatePages(pdfDoc, magBytes, magOverflow, insertAt);
+      await appendOverflowTemplatePages(pdfDoc, magBytes, magOverflow, insertAt, "Atualização");
     } else {
       await appendAnnexPages(pdfDoc, "Magias (continuação)", magOverflow);
     }
