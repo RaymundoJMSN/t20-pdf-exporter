@@ -772,11 +772,45 @@ export async function buildAndOpenPDF(
   if (tesouros.length > 0)
     invSections.push("Tesouros e Itens:\n" + tesouros.map(formatItem).join("\n"));
   const invSan = sanitize(invSections.join("\n\n"));
-  setText(form, "item1", invSan.slice(0, 1000));
-  setText(form, "item2", invSan.slice(1000, 2000));
-  // Overflow into annex page when total > 2000 chars.
+  // Split by LINE (not by char) so items don't get cut mid-word. Fills item1
+  // up to ~24 lines / 950 chars, then item2 with the same caps, then the rest
+  // spills to an annex page. Each subsequent box accepts whatever full line
+  // didn't fit in the previous one.
+  const ITEM_BOX_LINE_CAP = 24;
+  const ITEM_BOX_CHAR_CAP = 950;
+  const invLinesAll = invSan.split("\n");
+  const boxes: string[][] = [[], []];
+  const overflow: string[] = [];
+  let curBox = 0;
+  let curChars = 0;
+  for (const line of invLinesAll) {
+    if (curBox > 1) {
+      overflow.push(line);
+      continue;
+    }
+    const lineLen = line.length + 1; // +1 for the joining "\n"
+    const wouldFitChars = curChars + lineLen <= ITEM_BOX_CHAR_CAP;
+    const wouldFitLines = boxes[curBox].length < ITEM_BOX_LINE_CAP;
+    if (boxes[curBox].length > 0 && (!wouldFitChars || !wouldFitLines)) {
+      curBox += 1;
+      curChars = 0;
+      if (curBox > 1) {
+        overflow.push(line);
+        continue;
+      }
+    }
+    boxes[curBox].push(line);
+    curChars += lineLen;
+  }
+  setText(form, "item1", boxes[0].join("\n"));
+  setText(form, "item2", boxes[1].join("\n"));
+  // Overflow → annex page (preserves the section headings since they are
+  // already part of the line stream).
   let invOverflowText = "";
-  if (invSan.length > 2000) invOverflowText = invSan;
+  if (overflow.length > 0) {
+    invOverflowText =
+      "Continuação do inventário:\n\n" + overflow.join("\n");
+  }
 
   // 6c) Armas → ataque1..5 / dano1..5 / critico1..5 / alcance1..5 / tipo1..5 / tAtak1..5
   const armaSummaries = armas.slice(0, 5).map((i) => formatArma(i as unknown as FoundryItemLike, sys, nivel));
