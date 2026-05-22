@@ -1,3 +1,7 @@
 {
-  "T20PDF.ModuleTitle": "Tormenta 20 — PDF Exporter"
+  "T20PDF.ModuleTitle": "Tormenta 20 — PDF Exporter",
+  "T20PDF.UI.ExportPDF": "Export PDF",
+  "T20PDF.Notify.NoActor": "No actor selected.",
+  "T20PDF.Notify.NotCharacter": "Only player characters can be exported.",
+  "T20PDF.Notify.PlaceholderExport": "Collecting data for {name}… (PDF not implemented yet — see console)."
 }

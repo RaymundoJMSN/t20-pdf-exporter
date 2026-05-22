@@ -1,3 +1,7 @@
 {
-  "T20PDF.ModuleTitle": "Tormenta 20 — Exportador de PDF"
+  "T20PDF.ModuleTitle": "Tormenta 20 — Exportador de PDF",
+  "T20PDF.UI.ExportPDF": "Exportar PDF",
+  "T20PDF.Notify.NoActor": "Nenhum personagem selecionado.",
+  "T20PDF.Notify.NotCharacter": "Só personagens jogáveis podem ser exportados.",
+  "T20PDF.Notify.PlaceholderExport": "Coletando dados de {name}… (PDF ainda não implementado — veja o console)."
 }
