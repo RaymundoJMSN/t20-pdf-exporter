@@ -38,7 +38,11 @@ src/
   constants.ts        MODULE_ID, SYSTEM_ID, CHARACTER_TYPE. Import these — don't hardcode strings.
   scripts/
     exporter.ts       exportActor(actor) — handler the 3 entry points call. Validates actor.type, then
-                      delegates to pdf/exportPDF.ts. Wraps errors as a user notification.
+                      reads the user's template choice (via settings.getTemplateSetting) and delegates
+                      to pdf/exportPDF.ts. Wraps errors as a user notification.
+    settings.ts       registerSettings() + getTemplateSetting(). Registers one world-scope client setting
+                      `t20-pdf-exporter.pdfTemplate` ("completa" | "impressao", default "completa") that
+                      shows up in Game Settings → Configure Settings → Tormenta 20 — Exportador de PDF.
     ui.ts             registerUI(). Hooks:
                        - getActorSheetHeaderButtons → sheet header "Exportar PDF" button.
                        - getActorContextOptions    → v13 sidebar right-click entry. NOT getActorDirectoryEntryContext
@@ -147,7 +151,9 @@ Keep `npm run typecheck` clean. If new fvtt-types friction shows up, escape it l
 - **Module id:** `t20-pdf-exporter`. Changing it breaks the junction, the `module.json` id, the template fetch URL (`modules/t20-pdf-exporter/...`), and any `game.settings.register` keys (none registered yet).
 - **No globals.** Anything macros need lives on `game.modules.get(MODULE_ID).api`.
 - **Hooks register from `module.ts` only.** Feature files export a `register*()` function called from the entry.
-- **Settings.** Not registered yet. When added, put them in `src/scripts/settings.ts` and call `registerSettings()` from `init`. All keys must be namespaced by the module id.
+- **Settings.** Registered in [src/scripts/settings.ts](src/scripts/settings.ts), wired from `module.ts:init`. Current keys (all namespaced under `t20-pdf-exporter.`):
+  - `pdfTemplate` — `"completa"` | `"impressao"`, world scope, drives which template the exporter loads. Read via `getTemplateSetting()` rather than `game.settings.get` directly so the fallback default lives in one place.
+  When adding a new setting: append both `register` block and a typed getter to `settings.ts`, add lang keys (`T20PDF.Settings.<Key>.Name/Hint/Choice…`) to both `pt-BR.json` and `en.json`, then read via the getter.
 - **Language:** code & identifiers in English; user-facing strings in `lang/pt-BR.json` first, `en.json` mirrors.
 - **Actor data:** always via `actor.system.*` and `actor.items`. Never scrape DOM from the T20 system's sheet.
 - **Imports:** use `MODULE_ID`, `SYSTEM_ID`, `CHARACTER_TYPE` from `src/constants.ts`. Don't repeat string literals.

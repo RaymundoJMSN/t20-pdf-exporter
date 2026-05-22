@@ -1,5 +1,6 @@
 import { MODULE_ID, CHARACTER_TYPE } from "../constants";
 import { buildAndOpenPDF } from "./pdf/exportPDF";
+import { getTemplateSetting } from "./settings";
 
 export async function exportActor(actor: Actor | undefined | null): Promise<void> {
   if (!actor) {
@@ -16,7 +17,7 @@ export async function exportActor(actor: Actor | undefined | null): Promise<void
   );
 
   try {
-    await buildAndOpenPDF(actor, { template: "completa" });
+    await buildAndOpenPDF(actor, { template: getTemplateSetting() });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[${MODULE_ID}] PDF export failed`, err);

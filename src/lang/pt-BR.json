@@ -4,5 +4,9 @@
   "T20PDF.Notify.NoActor": "Nenhum personagem selecionado.",
   "T20PDF.Notify.NotCharacter": "Só personagens jogáveis podem ser exportados.",
   "T20PDF.Notify.Exporting": "Gerando PDF de {name}…",
-  "T20PDF.Notify.ExportFailed": "Falha ao exportar PDF: {error}"
+  "T20PDF.Notify.ExportFailed": "Falha ao exportar PDF: {error}",
+  "T20PDF.Settings.Template.Name": "Template de PDF",
+  "T20PDF.Settings.Template.Hint": "Escolhe qual ficha usar como base. 'Completa' tem o fundo decorativo. 'Impressão' tem fundo branco, mais econômico para imprimir.",
+  "T20PDF.Settings.Template.ChoiceCompleta": "Completa (com fundo decorativo)",
+  "T20PDF.Settings.Template.ChoiceImpressao": "Impressão (sem fundo, economiza tinta)"
 }
