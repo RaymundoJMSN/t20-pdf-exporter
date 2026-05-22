@@ -151,6 +151,8 @@ Keep `npm run typecheck` clean. If new fvtt-types friction shows up, escape it l
 - **Actor data:** always via `actor.system.*` and `actor.items`. Never scrape DOM from the T20 system's sheet.
 - **Imports:** use `MODULE_ID`, `SYSTEM_ID`, `CHARACTER_TYPE` from `src/constants.ts`. Don't repeat string literals.
 - **Item descriptions are HTML.** When putting them on the PDF, strip tags first (see `sanitize()` in `pdf/exportPDF.ts`) and then sanitize to CP1252 (pdf-lib default fonts are WinAnsi only).
+- **Foundry enrichment markers.** Descriptions also contain `@UUID[...]{Label}`, `@Compendium[...]{Label}`, `@Embed[...]`, `@Check[...]`, `@Roll[...]` patterns. `sanitize()` strips these BEFORE the HTML pass, keeping the `{Label}` text when present and dropping the marker entirely when it has no label. Add new patterns to that single regex if Foundry adds more.
+- **Code-to-label lookup tables.** T20 stores many fields as 3-letter codes (`arc`, `lev`, `enc`, `inst`, …). All display-name maps live near the top of `pdf/exportPDF.ts` (`MAGIA_TIPO`, `MAGIA_ESCOLA`, `MAGIA_EXECUCAO`, `MAGIA_ALCANCE`, `MAGIA_DURACAO_UNITS`, `PROF_ARMADURA`, `PROF_ARMA`, `ATR_FULL`). Use `lookupOrTitle(map, code)` — if the code isn't in the map it falls back to a title-cased version of the raw code so unknown values still render legibly.
 
 ## PDF template fields (key reference)
 
@@ -168,9 +170,13 @@ Templates inherit from the [`gerador-ficha-tormenta20`](https://github.com/devsa
   - Outros: `outros{N+1}` (always "0" in MVP).
   - Dropdown atributo-chave: `modSelect{N}`.
   - Checkbox treinada: `treinado{N+1}`.
-- Magias: `Atualização` (bullet list, auto-sized 8–12pt by length).
+- Magias: `Atualização` (auto-sized 8–12pt by length). Each magia rendered as a block:
+  - Header: `• Nome (Tipo Nºº, Escola, custo PM)`.
+  - Detail line (pipe-separated): `Execução: X | Alcance: Y | Alvo: Z | Duração: W | Resistência: T (CD N)`. CD = `10 + ⌊nivel/2⌋ + mod(atributo de conjuração do personagem)`. Conjuração lê de `actor.system.attributes.conjuracao`.
+  - Description (HTML + Foundry enrichment stripped via `sanitize`).
+  - `Aprimoramentos:` line followed by indented `  N PM: <desc>` for each entry in `item.effects` that has `flags.tormenta20.custo` set. Effects without a `custo` flag are state effects (e.g. "Magia (Cena)"), not upgrades — skipped.
 - Poderes + habilidades: `Historico` (auto-sized).
-- Proficiências: `caracteristicas`.
+- Proficiências: `caracteristicas`. Codes mapped via `PROF_ARMADURA` / `PROF_ARMA`. Output groups: `Armaduras: Leve, Pesada, Escudo` / `Armas: Simples, Marcial`.
 
 Known gaps (intentional MVP):
 - Armas / armaduras don't fill dedicated `ataque{1..5}` / `armadura{1..2}` slots — everything is dumped into the inventory blob.

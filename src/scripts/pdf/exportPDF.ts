@@ -30,8 +30,25 @@ const CP1252_REPLACEMENTS: Record<string, string> = {
 
 function sanitize(text: string | null | undefined): string {
   if (!text) return "";
-  // Strip HTML tags first (item.system.description.value is HTML).
-  const stripped = String(text)
+  // Strip Foundry enrichment markers FIRST, before HTML stripping eats braces.
+  // Patterns supported (most-specific first):
+  //   @UUID[...]{Label}        → Label
+  //   @Compendium[...]{Label}  → Label
+  //   @Embed[...]{Label}       → Label
+  //   @Check[...]{Label}       → Label
+  //   @Roll[1d6]{Label}        → Label
+  //   @UUID[...]               → ""  (no label form, just drop)
+  //   @Compendium[...]         → ""
+  //   @Embed[...]              → ""
+  //   @Check[...]              → ""
+  //   @Roll[...]               → ""
+  const enrichedStripped = String(text).replace(
+    /@(?:UUID|Compendium|Embed|Check|Roll)\[[^\]]+\](?:\{([^}]+)\})?/g,
+    (_match, label: string | undefined) => label ?? "",
+  );
+
+  // Then strip HTML tags (item.system.description.value is HTML).
+  const stripped = enrichedStripped
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
     .replace(/<[^>]+>/g, "")
@@ -125,6 +142,85 @@ const PERICIAS: PericiaRow[] = [
 ];
 
 // ────────────────────────────────────────────────────────────────────
+// T20 lookup tables — abbreviated codes → display names (pt-BR)
+// ────────────────────────────────────────────────────────────────────
+
+const ATR_FULL: Record<Atr, string> = {
+  for: "Força",
+  des: "Destreza",
+  con: "Constituição",
+  int: "Inteligência",
+  sab: "Sabedoria",
+  car: "Carisma",
+};
+
+const MAGIA_TIPO: Record<string, string> = {
+  arc: "Arcana",
+  div: "Divina",
+  uni: "Universal",
+};
+
+const MAGIA_ESCOLA: Record<string, string> = {
+  abj: "Abjuração",
+  adv: "Adivinhação",
+  con: "Convocação",
+  div: "Divinação",
+  enc: "Encantamento",
+  evo: "Evocação",
+  ilu: "Ilusão",
+  nec: "Necromancia",
+  tra: "Transmutação",
+};
+
+const MAGIA_EXECUCAO: Record<string, string> = {
+  action: "Padrão",
+  full: "Completa",
+  free: "Livre",
+  reaction: "Reação",
+  movement: "Movimento",
+  passive: "Passiva",
+};
+
+const MAGIA_ALCANCE: Record<string, string> = {
+  self: "Pessoal",
+  short: "Curto",
+  medium: "Médio",
+  long: "Longo",
+  unlimited: "Ilimitado",
+  touch: "Toque",
+  none: "—",
+};
+
+const MAGIA_DURACAO_UNITS: Record<string, string> = {
+  inst: "Instantânea",
+  round: "rodadas",
+  scene: "Cena",
+  day: "dias",
+  min: "minutos",
+  hour: "horas",
+  perm: "Permanente",
+  sustain: "Sustentada",
+};
+
+const PROF_ARMADURA: Record<string, string> = {
+  lev: "Leve",
+  pes: "Pesada",
+  esc: "Escudo",
+};
+
+const PROF_ARMA: Record<string, string> = {
+  simples: "Simples",
+  marcial: "Marcial",
+  exotica: "Exótica",
+  exotic: "Exótica",
+};
+
+function lookupOrTitle(map: Record<string, string>, key: string): string {
+  if (!key) return "";
+  return map[key] ?? (key.charAt(0).toUpperCase() + key.slice(1));
+}
+
+// ────────────────────────────────────────────────────────────────────
 // Foundry actor reads (kept loose — T20 schema isn't in fvtt-types)
 // ────────────────────────────────────────────────────────────────────
 
@@ -216,6 +312,115 @@ function autoFontSize(form: PDFForm, name: string, len: number): void {
   } catch {
     /* ignore */
   }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Magia formatter — header (tipo/círculo/escola/exec/alcance/alvo/duração/resistência),
+// description, then aprimoramentos derived from effects[].flags.tormenta20.custo.
+// ────────────────────────────────────────────────────────────────────
+
+interface MagiaEffectLike {
+  name?: string;
+  flags?: { tormenta20?: { custo?: string | number } };
+}
+
+interface FoundryItemLike {
+  name?: string | null;
+  system?: unknown;
+  // Foundry stores effects as an EmbeddedCollection; both arrays and collections
+  // accept `[Symbol.iterator]`. We accept either and normalize via Array.from.
+  effects?: Iterable<MagiaEffectLike> | null;
+}
+
+function formatDuracao(node: AnyRec | undefined): string {
+  if (!node) return "";
+  const units = typeof node.units === "string" ? node.units : "";
+  const value = typeof node.value === "number" ? node.value : 0;
+  const special = typeof node.special === "string" ? node.special.trim() : "";
+  const unitLabel = lookupOrTitle(MAGIA_DURACAO_UNITS, units);
+  if (!units) return special;
+  if (units === "inst" || units === "perm" || units === "sustain") return unitLabel;
+  // counted units: "scene" usually shows alone, others combine with value.
+  if (units === "scene") return value > 1 ? `${value} ${unitLabel.toLowerCase()}s` : unitLabel;
+  return value > 0 ? `${value} ${unitLabel}` : unitLabel;
+}
+
+function formatResistencia(node: AnyRec | undefined, sys: AnyRec, nivel: number): string {
+  if (!node) return "";
+  const txt = typeof node.txt === "string" ? node.txt.trim() : "";
+  const atributo = typeof node.atributo === "string" ? node.atributo : "";
+  if (!txt && !atributo) return "";
+
+  // CD = 10 + meio nível + mod do atributo de conjuração do personagem.
+  const conjAtr = pickString(sys, "attributes", "conjuracao") as Atr | "";
+  let cdStr = "";
+  if (conjAtr && (["for", "des", "con", "int", "sab", "car"] as string[]).includes(conjAtr)) {
+    const mod = atributoTotal(sys, conjAtr as Atr);
+    const cd = 10 + meioNivel(nivel) + mod;
+    cdStr = ` (CD ${cd})`;
+  }
+  if (txt) return `${txt}${cdStr}`;
+  // No txt — show attribute name + CD.
+  const atrLabel = atributo in ATR_FULL ? ATR_FULL[atributo as Atr] : atributo;
+  return `${atrLabel}${cdStr}`;
+}
+
+function formatMagia(item: FoundryItemLike, sys: AnyRec, nivel: number): string {
+  const isys = (item.system ?? {}) as AnyRec;
+  const name = item.name ?? "Magia";
+  const tipo = lookupOrTitle(MAGIA_TIPO, pickString(isys, "tipo"));
+  const circulo = pickNumber(isys, "circulo");
+  const escola = lookupOrTitle(MAGIA_ESCOLA, pickString(isys, "escola"));
+  const custoBase = pickNumber(isys, "ativacao", "custo");
+
+  // Header line: • Nome (Arcana 1º, Encantamento, 1 PM)
+  const headParts: string[] = [];
+  if (tipo) headParts.push(`${tipo}${circulo ? ` ${circulo}º` : ""}`);
+  else if (circulo) headParts.push(`${circulo}º`);
+  if (escola) headParts.push(escola);
+  if (custoBase > 0) headParts.push(`${custoBase} PM`);
+  const header = `• ${name}${headParts.length > 0 ? ` (${headParts.join(", ")})` : ""}`;
+
+  // Detail line(s): Execução | Alcance | Alvo/Área | Duração | Resistência
+  const detailBits: string[] = [];
+  const execucao = lookupOrTitle(MAGIA_EXECUCAO, pickString(isys, "ativacao", "execucao"));
+  if (execucao) detailBits.push(`Execução: ${execucao}`);
+  const alcance = lookupOrTitle(MAGIA_ALCANCE, pickString(isys, "alcance"));
+  if (alcance && alcance !== "—") detailBits.push(`Alcance: ${alcance}`);
+  const alvo = pickString(isys, "alvo").trim();
+  const area = pickString(isys, "area").trim();
+  if (alvo) detailBits.push(`Alvo: ${alvo}`);
+  if (area) detailBits.push(`Área: ${area}`);
+  const duracao = formatDuracao(isys.duracao as AnyRec | undefined);
+  if (duracao) detailBits.push(`Duração: ${duracao}`);
+  const resistencia = formatResistencia(isys.resistencia as AnyRec | undefined, sys, nivel);
+  if (resistencia) detailBits.push(`Resistência: ${resistencia}`);
+
+  const lines: string[] = [header];
+  if (detailBits.length > 0) lines.push(detailBits.join(" | "));
+
+  // Description (sanitize already strips Foundry @UUID[...]{label})
+  const desc = sanitize(pickString(isys, "description", "value"));
+  if (desc) lines.push(desc);
+
+  // Aprimoramentos: each effect with flags.tormenta20.custo set is one upgrade.
+  const allEffects: MagiaEffectLike[] = item.effects ? Array.from(item.effects) : [];
+  const aprimoramentos = allEffects
+    .filter((e) => {
+      const c = e.flags?.tormenta20?.custo;
+      return c !== undefined && c !== null && String(c).trim() !== "";
+    })
+    .map((e) => {
+      const custo = e.flags?.tormenta20?.custo;
+      const aprimText = sanitize(e.name ?? "");
+      return `  ${custo} PM: ${aprimText}`;
+    });
+  if (aprimoramentos.length > 0) {
+    lines.push("Aprimoramentos:");
+    lines.push(...aprimoramentos);
+  }
+
+  return lines.join("\n");
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -333,13 +538,7 @@ export async function buildAndOpenPDF(
   // 8) Magias (item.type === "magia")
   const magias = items.filter((i) => (i.type as string) === "magia");
   const magiasText = magias
-    .map((i) => {
-      const isys = (i.system ?? {}) as AnyRec;
-      const desc = sanitize(pickString(isys, "description", "value"));
-      const custo = pickNumber(isys, "custoPM");
-      const head = `• ${i.name}${custo ? ` (${custo} PM)` : ""}`;
-      return desc ? `${head}: ${desc}` : head;
-    })
+    .map((i) => formatMagia(i as unknown as FoundryItemLike, sys, nivel))
     .join("\n\n");
   setText(form, "Atualização", sanitize(magiasText));
   autoFontSize(form, "Atualização", magiasText.length);
@@ -358,16 +557,17 @@ export async function buildAndOpenPDF(
   setText(form, "Historico", sanitize(poderesText));
   autoFontSize(form, "Historico", poderesText.length);
 
-  // 10) Proficiências (armaduras + armas)
+  // 10) Proficiências (armaduras + armas → nomes legíveis)
   const profArmaduras = (sys.tracos as AnyRec | undefined)?.profArmaduras as AnyRec | undefined;
   const profArmas = (sys.tracos as AnyRec | undefined)?.profArmas as AnyRec | undefined;
   const armList = Array.isArray(profArmaduras?.value) ? (profArmaduras!.value as string[]) : [];
   const armaList = Array.isArray(profArmas?.value) ? (profArmas!.value as string[]) : [];
-  const profsText = [
-    ...armList.map((s) => `Armadura: ${s}`),
-    ...armaList.map((s) => `Arma: ${s}`),
-  ].join("\n");
-  setText(form, "caracteristicas", sanitize(profsText));
+  const armNames = armList.map((s) => lookupOrTitle(PROF_ARMADURA, s));
+  const armaNames = armaList.map((s) => lookupOrTitle(PROF_ARMA, s));
+  const profsLines: string[] = [];
+  if (armNames.length > 0) profsLines.push(`Armaduras: ${armNames.join(", ")}`);
+  if (armaNames.length > 0) profsLines.push(`Armas: ${armaNames.join(", ")}`);
+  setText(form, "caracteristicas", sanitize(profsLines.join("\n")));
 
   // 11) Metadata + open
   pdfDoc.setTitle(`Ficha de ${actor.name ?? "Personagem"}`);
