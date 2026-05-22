@@ -64,8 +64,16 @@ src/
     en.json           Mirror. Same keys as pt-BR.
 assets/
   templates/
-    sheet.pdf         Official-style ficha with decorative background (~3.8 MB).
-    sheet-print.pdf   Same form fields, no background (saves ink) (~3.8 MB).
+    sheet.pdf                  Official-style ficha with decorative background (~3.8 MB). 3 pages:
+                               page 0 = header/atributos/perícias, page 1 = poderes (Historico field),
+                               page 2 = magias (Atualização field).
+    sheet-print.pdf            Same 3 pages, no background (saves ink) (~3.8 MB).
+    sheet_poderes.pdf          1-page overflow template for poderes (decorative). Contains a Historico
+                               field at the same rect as the main page's; we copy this page, strip its
+                               form-field annotations, and drawText the overflow chunk in the field rect.
+    sheet_magias.pdf           1-page overflow template for magias (decorative). Same idea, Atualização field.
+    sheet-print_poderes.pdf    Print-variant overflow page for poderes.
+    sheet-print_magias.pdf     Print-variant overflow page for magias.
 dist/                 Build output. Gitignored. Vite recreates it on every build.
 ```
 
@@ -187,14 +195,18 @@ Templates inherit from the [`gerador-ficha-tormenta20`](https://github.com/devsa
 - Poderes + habilidades: `Historico` (auto-sized).
 - Proficiências: `caracteristicas`. Codes mapped via `PROF_ARMADURA` / `PROF_ARMA`. Output groups: `Armaduras: Leve, Pesada, Escudo` / `Armas: Simples, Marcial`.
 
-## Annex pages (overflow handling)
+## Overflow handling
 
-Form-field text in the template clips around ~3500 chars even after auto-font-shrinking to 8pt. When a character has many magias, poderes, items, or weapons, the rendered field is silently truncated. To prevent data loss, the builder appends extra A4 pages at the end of the PDF whenever any of these exceeds `ANNEX_THRESHOLD` (3500 chars) — or, for weapons specifically, exceeds 5 entries.
+Form-field text in the template clips around `MAIN_FIELD_CAP` (3000 chars) even after auto-font-shrinking to 8pt. When a character has many poderes or magias, the content is split at the last newline before that cap. The first chunk fills the original `Historico`/`Atualização` field as usual; the rest goes onto dedicated overflow pages.
 
-- Implementation: `appendAnnexPages(pdfDoc, title, body)` in [src/scripts/pdf/exportPDF.ts](src/scripts/pdf/exportPDF.ts).
-- Font: embedded `StandardFonts.Helvetica` / `HelveticaBold`. WinAnsi only — `sanitize()` is still required.
-- Layout: A4 portrait (595×842pt), 40pt margin, 9pt body / 14pt title, manual word-wrap via `font.widthOfTextAtSize`. Auto-paginates: when the cursor would fall below the bottom margin, a fresh page with a `(cont.)` title is appended.
-- Order of appended sections: Magias → Poderes → Inventário → Armas extras (only the ones present). Each gets its own annex page(s).
+**Poderes & magias — dedicated overflow templates.**
+- Powered by `appendOverflowTemplatePages(pdfDoc, srcBytes, text, insertAtIdx)` and `insertOverflowTemplatePage(...)` in [src/scripts/pdf/exportPDF.ts](src/scripts/pdf/exportPDF.ts).
+- For each chunk, copies a page from `sheet_poderes.pdf` / `sheet_magias.pdf` (or the print variants when the user picked "impressao"), strips its `/Annots` so the duplicated form fields don't shadow-write the main sheet, inserts the copy at the right index, then `drawText`s the chunk inside the same rect the original field occupied (`OVERFLOW_RECT = (35.5, 43.3) → (536.8, 717.0)`).
+- Insertion order: **poderes first** (after the main poderes page at index 1), then magias appended after the original magias page at index `2 + podPagesAdded`. This keeps the visual order header → poderes → poderes-overflow* → magias → magias-overflow*.
+- Font: embedded `StandardFonts.Helvetica` @ 9pt with `OVERFLOW_LINE_HEIGHT = 11pt`. Word-wrap via `font.widthOfTextAtSize`. Lines per page derived from the rect height; fresh template page is copied per chunk so the decorative frame appears on every overflow page.
+
+**Inventário & armas extras — plain annex pages.**
+There's no dedicated overflow template for these, so they still use `appendAnnexPages(pdfDoc, title, body)` — plain A4 pages with Helvetica text drawn from a top-left margin. These are always appended *last* (after any poderes/magias overflow). If you ever want a decorative inventory overflow page, add a `sheet_inventario.pdf` (+ print variant) and follow the poderes/magias pattern.
 
 Known gaps (intentional MVP):
 - Skill totals trust `actor.system.pericias.*.value` (Foundry computed); we don't recompute bonuses from items.
