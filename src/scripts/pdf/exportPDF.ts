@@ -463,10 +463,12 @@ const OVERFLOW_RECT = { x: 35.5, y: 43.3, x2: 536.8, y2: 717.0 };
 // asked for a single size across all pages so the overflow pages don't look
 // different from the main one.
 const POD_MAG_FONT_SIZE = 14;
-// Char count that fits one Historico/Atualização page at POD_MAG_FONT_SIZE.
-// At 14pt, the (~501 × 674)pt rect holds roughly 40 lines × ~60 chars wrapped.
-// 2200 is conservative; lower if users still see content cut at the bottom.
-const MAIN_FIELD_CAP = 2200;
+// Max visual lines that fit one Historico/Atualização page at
+// POD_MAG_FONT_SIZE. Measured by Yuri against the rendered ficha. Chunking
+// always honors source-line boundaries — a chunk never ends mid sentence.
+const POD_MAG_LINES_PER_PAGE = 40;
+// Horizontal padding inside the field rect when measuring wrap width.
+const POD_MAG_INNER_PADDING = 8;
 
 async function fetchTemplateOptional(file: string): Promise<ArrayBuffer | null> {
   try {
@@ -478,27 +480,48 @@ async function fetchTemplateOptional(file: string): Promise<ArrayBuffer | null> 
   }
 }
 
-/** Split `text` at the last newline before `cap`. If no good line break is
- *  found in the first half, falls back to a hard char cut. */
-function splitAtLineBoundary(text: string, cap: number): [string, string] {
-  if (text.length <= cap) return [text, ""];
-  let cut = text.lastIndexOf("\n", cap);
-  if (cut < cap * 0.5) cut = cap;
-  return [text.slice(0, cut), text.slice(cut).replace(/^\n/, "")];
+/** Count how many visual lines a source line will render as inside the
+ *  Historico / Atualização field (i.e. how many times it wraps at the
+ *  field's width). An empty source line counts as one visual line. */
+function visualLineCount(
+  sourceLine: string,
+  font: PDFFont,
+  size: number,
+  maxWidth: number,
+): number {
+  if (sourceLine === "") return 1;
+  return wrapLine(sourceLine, font, size, maxWidth).length;
 }
 
-/** Split `text` into chunks of up to `capPerPage` chars, each cut at the
- *  last newline before the cap (or hard at the cap if no good break). */
-function chunkByLineBoundary(text: string, capPerPage: number): string[] {
+/** Split `text` into chunks where each chunk renders as ≤ `maxLines`
+ *  visual lines (after wrapping at `maxWidth` with `font` @ `size`).
+ *  Source line boundaries are always honored — a chunk never ends mid
+ *  source line, so the visible text never gets cut in the middle of a
+ *  sentence. Returns an array of chunk strings; first chunk fills the
+ *  main field, rest go to overflow pages. */
+function chunkByVisualLines(
+  text: string,
+  font: PDFFont,
+  size: number,
+  maxWidth: number,
+  maxLines: number,
+): string[] {
+  const sourceLines = text.split("\n");
   const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > capPerPage) {
-    let cut = remaining.lastIndexOf("\n", capPerPage);
-    if (cut < capPerPage * 0.5) cut = capPerPage;
-    chunks.push(remaining.slice(0, cut));
-    remaining = remaining.slice(cut).replace(/^\n+/, "");
+  let buf: string[] = [];
+  let used = 0;
+  for (const src of sourceLines) {
+    const visual = visualLineCount(src, font, size, maxWidth);
+    // Start a new chunk if adding this source line would exceed the page cap.
+    if (used + visual > maxLines && buf.length > 0) {
+      chunks.push(buf.join("\n"));
+      buf = [];
+      used = 0;
+    }
+    buf.push(src);
+    used += visual;
   }
-  if (remaining.length > 0) chunks.push(remaining);
+  if (buf.length > 0) chunks.push(buf.join("\n"));
   return chunks;
 }
 
@@ -569,18 +592,26 @@ async function insertOverflowTemplatePage(
 /** Paginate `text` into one or more copies of the given overflow template,
  *  inserted starting at `insertAtIdx`. Each insertion bumps subsequent
  *  page indices by 1; callers must shift their own next insert point by
- *  the returned count. */
+ *  the returned count. Uses the same 40-visual-lines cap as the main field. */
 async function appendOverflowTemplatePages(
   pdfDoc: PDFDocument,
   srcBytes: ArrayBuffer,
   text: string,
   insertAtIdx: number,
   baseFieldName: string,
+  font: PDFFont,
 ): Promise<number> {
   const sanText = sanitize(text);
   if (!sanText.trim()) return 0;
 
-  const chunks = chunkByLineBoundary(sanText, MAIN_FIELD_CAP);
+  const maxWidth = OVERFLOW_RECT.x2 - OVERFLOW_RECT.x - POD_MAG_INNER_PADDING * 2;
+  const chunks = chunkByVisualLines(
+    sanText,
+    font,
+    POD_MAG_FONT_SIZE,
+    maxWidth,
+    POD_MAG_LINES_PER_PAGE,
+  );
   for (let i = 0; i < chunks.length; i++) {
     await insertOverflowTemplatePage(
       pdfDoc,
@@ -996,21 +1027,33 @@ export async function buildAndOpenPDF(
     setCheckBox(form, `treinado${idx + 1}`, treinada);
   });
 
-  // 8) Magias (item.type === "magia") — split at line boundary so first
-  //    chunk fits the Atualização field; rest goes to dedicated overflow pages.
+  // 8 + 9) Magias and Poderes use the same chunking: split into pages by
+  //    visual line count (POD_MAG_LINES_PER_PAGE = 40 lines at 14pt) so the
+  //    field never renders with content cut off at the bottom. First chunk
+  //    fills the main sheet field; remaining chunks become overflow pages.
+  const podMagFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const podMagMaxWidth = OVERFLOW_RECT.x2 - OVERFLOW_RECT.x - POD_MAG_INNER_PADDING * 2;
+
   const magias = items.filter((i) => (i.type as string) === "magia");
   const magiasTextFull = magias
     .map((i) => formatMagia(i as unknown as FoundryItemLike, sys, nivel))
     .join("\n\n");
-  const [magMain, magOverflow] = splitAtLineBoundary(magiasTextFull, MAIN_FIELD_CAP);
-  setText(form, "Atualização", sanitize(magMain));
+  const magChunks = chunkByVisualLines(
+    sanitize(magiasTextFull),
+    podMagFont,
+    POD_MAG_FONT_SIZE,
+    podMagMaxWidth,
+    POD_MAG_LINES_PER_PAGE,
+  );
+  const magMain = magChunks[0] ?? "";
+  const magOverflow = magChunks.slice(1).join("\n\n");
+  setText(form, "Atualização", magMain);
   try {
     forceFontSize(form.getTextField("Atualização"), POD_MAG_FONT_SIZE);
   } catch {
     /* Atualização field missing — ignore */
   }
 
-  // 9) Poderes (item.type === "poder") — same split.
   const poderes = items.filter((i) => (i.type as string) === "poder");
   const poderesTextFull = poderes
     .map((i) => {
@@ -1021,8 +1064,16 @@ export async function buildAndOpenPDF(
       return desc ? `${head}: ${desc}` : head;
     })
     .join("\n\n");
-  const [podMain, podOverflow] = splitAtLineBoundary(poderesTextFull, MAIN_FIELD_CAP);
-  setText(form, "Historico", sanitize(podMain));
+  const podChunks = chunkByVisualLines(
+    sanitize(poderesTextFull),
+    podMagFont,
+    POD_MAG_FONT_SIZE,
+    podMagMaxWidth,
+    POD_MAG_LINES_PER_PAGE,
+  );
+  const podMain = podChunks[0] ?? "";
+  const podOverflow = podChunks.slice(1).join("\n\n");
+  setText(form, "Historico", podMain);
   try {
     forceFontSize(form.getTextField("Historico"), POD_MAG_FONT_SIZE);
   } catch {
@@ -1063,6 +1114,7 @@ export async function buildAndOpenPDF(
         podOverflow,
         PODERES_PAGE_IDX + 1,
         "Historico",
+        podMagFont,
       );
     } else {
       // Fallback: plain annex page (template missing).
@@ -1074,7 +1126,7 @@ export async function buildAndOpenPDF(
     const magBytes = await fetchTemplateOptional(magTplFile);
     if (magBytes) {
       const insertAt = MAGIAS_PAGE_IDX + podPagesAdded + 1;
-      await appendOverflowTemplatePages(pdfDoc, magBytes, magOverflow, insertAt, "Atualização");
+      await appendOverflowTemplatePages(pdfDoc, magBytes, magOverflow, insertAt, "Atualização", podMagFont);
     } else {
       await appendAnnexPages(pdfDoc, "Magias (continuação)", magOverflow);
     }
