@@ -6,15 +6,15 @@ type HeaderButton = { label: string; class: string; icon: string; onclick: () =>
 interface DirectoryContextEntry {
   name: string;
   icon: string;
-  condition?: (li: JQuery) => boolean;
-  callback: (li: JQuery) => void;
+  callback: (target: HTMLElement) => void;
+  condition?: (target: HTMLElement) => boolean;
 }
 
 export function registerUI(): void {
   // @ts-expect-error fvtt-types missing this hook key for v13
   Hooks.on("getActorSheetHeaderButtons", onActorSheetHeader);
-  // @ts-expect-error fvtt-types missing this hook key for v13
-  Hooks.on("getActorDirectoryEntryContext", onActorDirectoryContext);
+  // @ts-expect-error fvtt-types narrows callback signature; we accept HTMLElement target
+  Hooks.on("getActorContextOptions", onActorContextOptions);
 }
 
 function onActorSheetHeader(app: ActorSheet, buttons: HeaderButton[]): void {
@@ -29,20 +29,24 @@ function onActorSheetHeader(app: ActorSheet, buttons: HeaderButton[]): void {
   });
 }
 
-function onActorDirectoryContext(_html: JQuery, options: DirectoryContextEntry[]): void {
+function getActorFromTarget(target: HTMLElement): Actor | undefined {
+  // v13 sidebar entries carry data-entry-id on the .directory-item / .document element.
+  const el = target.closest<HTMLElement>("[data-entry-id]") ?? target;
+  const id = el.dataset?.entryId ?? el.dataset?.documentId;
+  if (!id) return undefined;
+  return game.actors?.get(id) ?? undefined;
+}
+
+function onActorContextOptions(_app: unknown, options: DirectoryContextEntry[]): void {
   options.push({
     name: "T20PDF.UI.ExportPDF",
     icon: '<i class="fas fa-file-pdf"></i>',
-    condition: (li) => {
-      const id = (li.data("documentId") ?? li.data("entityId")) as string | undefined;
-      if (!id) return false;
-      const actor = game.actors?.get(id);
+    condition: (target) => {
+      const actor = getActorFromTarget(target);
       return (actor?.type as string) === CHARACTER_TYPE;
     },
-    callback: (li) => {
-      const id = (li.data("documentId") ?? li.data("entityId")) as string | undefined;
-      if (!id) return;
-      const actor = game.actors?.get(id);
+    callback: (target) => {
+      const actor = getActorFromTarget(target);
       if (actor) void exportActor(actor);
     },
   });
