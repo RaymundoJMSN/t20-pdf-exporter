@@ -1,0 +1,45 @@
+{
+  "id": "t20-pdf-exporter",
+  "title": "Tormenta 20 — PDF Exporter",
+  "description": "Export Tormenta 20 character sheets to PDF for offline use.",
+  "version": "0.1.0",
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13",
+    "maximum": "13"
+  },
+  "authors": [
+    {
+      "name": "Yuri Lupalina",
+      "email": "yuri@lupalina.com.br"
+    }
+  ],
+  "relationships": {
+    "systems": [
+      {
+        "id": "tormenta20",
+        "type": "system",
+        "compatibility": {}
+      }
+    ]
+  },
+  "esmodules": ["dist/module.js"],
+  "styles": ["dist/module.css"],
+  "languages": [
+    {
+      "lang": "pt-BR",
+      "name": "Português (Brasil)",
+      "path": "src/lang/pt-BR.json"
+    },
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "src/lang/en.json"
+    }
+  ],
+  "url": "",
+  "manifest": "",
+  "download": "",
+  "license": "LICENSE",
+  "readme": "README.md"
+}
