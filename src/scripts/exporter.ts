@@ -1,4 +1,5 @@
 import { MODULE_ID, CHARACTER_TYPE } from "../constants";
+import { buildAndOpenPDF } from "./pdf/exportPDF";
 
 export async function exportActor(actor: Actor | undefined | null): Promise<void> {
   if (!actor) {
@@ -10,16 +11,17 @@ export async function exportActor(actor: Actor | undefined | null): Promise<void
     return;
   }
 
-  console.group(`[${MODULE_ID}] exportActor: ${actor.name}`);
-  console.log("actor", actor);
-  console.log("system", actor.system);
-  console.log(
-    "items",
-    actor.items.map((i) => ({ name: i.name, type: i.type })),
-  );
-  console.groupEnd();
-
   ui.notifications?.info(
-    game.i18n!.format("T20PDF.Notify.PlaceholderExport", { name: actor.name ?? "" }),
+    game.i18n!.format("T20PDF.Notify.Exporting", { name: actor.name ?? "" }),
   );
+
+  try {
+    await buildAndOpenPDF(actor, { template: "completa" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[${MODULE_ID}] PDF export failed`, err);
+    ui.notifications?.error(
+      game.i18n!.format("T20PDF.Notify.ExportFailed", { error: msg }),
+    );
+  }
 }

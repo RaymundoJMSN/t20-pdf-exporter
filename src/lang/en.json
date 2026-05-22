@@ -3,5 +3,6 @@
   "T20PDF.UI.ExportPDF": "Export PDF",
   "T20PDF.Notify.NoActor": "No actor selected.",
   "T20PDF.Notify.NotCharacter": "Only player characters can be exported.",
-  "T20PDF.Notify.PlaceholderExport": "Collecting data for {name}… (PDF not implemented yet — see console)."
+  "T20PDF.Notify.Exporting": "Generating PDF for {name}…",
+  "T20PDF.Notify.ExportFailed": "PDF export failed: {error}"
 }
