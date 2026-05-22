@@ -7,7 +7,13 @@
 // from the standalone T20-DB exporter (see CLAUDE.md → Credits).
 // ────────────────────────────────────────────────────────────────────
 
-import { PDFDocument, type PDFFont, type PDFForm, StandardFonts } from "pdf-lib";
+import {
+  PDFDocument,
+  type PDFFont,
+  type PDFForm,
+  PDFName,
+  StandardFonts,
+} from "pdf-lib";
 import { MODULE_ID } from "../../constants";
 
 export type PDFTemplate = "completa" | "impressao";
@@ -451,9 +457,123 @@ function formatArmadura(item: FoundryItemLike): ArmaduraSummary {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Annex page renderer — used when magias/poderes/inventário overflow
-// the AcroForm text field. Draws plain text on a new A4 page using
-// the standard Helvetica font (CP1252 only; sanitize already filters).
+// Template-based overflow pages for poderes (Historico) and magias
+// (Atualização). When the main sheet's field overflows, we copy the
+// dedicated single-page overflow template (sheet_poderes.pdf /
+// sheet_magias.pdf, or the print variants) and draw plain text inside
+// the same field rectangle. Form-field annotations on the copy are
+// stripped so the duplicate field names don't bind to the main page.
+// ────────────────────────────────────────────────────────────────────
+
+// Field rect on every variant (extracted via pypdf — same coords on all
+// 6 templates). Coordinates are PDF userspace: (x1, y1) bottom-left,
+// (x2, y2) top-right.
+const OVERFLOW_RECT = { x: 35.5, y: 43.3, x2: 536.8, y2: 717.0 };
+const OVERFLOW_PADDING = 6;
+const OVERFLOW_FONT_SIZE = 9;
+const OVERFLOW_LINE_HEIGHT = 11;
+// Char count above which the main sheet field starts clipping even at 8pt;
+// content past this cut goes to dedicated overflow pages.
+const MAIN_FIELD_CAP = 3000;
+
+async function fetchTemplateOptional(file: string): Promise<ArrayBuffer | null> {
+  try {
+    const res = await fetch(`modules/${MODULE_ID}/assets/templates/${file}`);
+    if (!res.ok) return null;
+    return await res.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
+/** Split `text` at the last newline before `cap`. If no good line break is
+ *  found in the first half, falls back to a hard char cut. */
+function splitAtLineBoundary(text: string, cap: number): [string, string] {
+  if (text.length <= cap) return [text, ""];
+  let cut = text.lastIndexOf("\n", cap);
+  if (cut < cap * 0.5) cut = cap;
+  return [text.slice(0, cut), text.slice(cut).replace(/^\n/, "")];
+}
+
+/** Copy an overflow-template page into `pdfDoc`, strip its form-field
+ *  annotations (to avoid colliding with main-sheet fields of the same
+ *  name), insert at `insertAtIdx`, and draw `chunkLines` inside the
+ *  field rectangle.  Returns the inserted page. */
+async function insertOverflowTemplatePage(
+  pdfDoc: PDFDocument,
+  srcBytes: ArrayBuffer,
+  insertAtIdx: number,
+  chunkLines: string[],
+  font: PDFFont,
+): Promise<void> {
+  const src = await PDFDocument.load(srcBytes);
+  const [copied] = await pdfDoc.copyPages(src, [0]);
+  // Drop all annotations on the copy — that removes the duplicate form
+  // fields so setText("Historico") on the form doesn't also overwrite
+  // these pages.
+  copied.node.delete(PDFName.of("Annots"));
+  pdfDoc.insertPage(insertAtIdx, copied);
+
+  let y = OVERFLOW_RECT.y2 - OVERFLOW_PADDING - OVERFLOW_FONT_SIZE;
+  for (const line of chunkLines) {
+    if (line) {
+      copied.drawText(line, {
+        x: OVERFLOW_RECT.x + OVERFLOW_PADDING,
+        y,
+        font,
+        size: OVERFLOW_FONT_SIZE,
+      });
+    }
+    y -= OVERFLOW_LINE_HEIGHT;
+  }
+}
+
+/** Paginate `text` into one or more copies of the given overflow template,
+ *  inserted starting at `insertAtIdx`.  Each insertion bumps subsequent
+ *  page indices by 1, so callers should track the number returned and
+ *  shift their next insert point accordingly.  Returns the count of
+ *  pages added. */
+async function appendOverflowTemplatePages(
+  pdfDoc: PDFDocument,
+  srcBytes: ArrayBuffer,
+  text: string,
+  insertAtIdx: number,
+): Promise<number> {
+  const sanText = sanitize(text);
+  if (!sanText.trim()) return 0;
+
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const maxWidth = OVERFLOW_RECT.x2 - OVERFLOW_RECT.x - OVERFLOW_PADDING * 2;
+  const availableHeight = OVERFLOW_RECT.y2 - OVERFLOW_RECT.y - OVERFLOW_PADDING * 2;
+  const linesPerPage = Math.floor(availableHeight / OVERFLOW_LINE_HEIGHT);
+
+  // Pre-wrap every source line to the field width.
+  const allLines: string[] = [];
+  for (const raw of sanText.split("\n")) {
+    if (raw === "") {
+      allLines.push("");
+      continue;
+    }
+    allLines.push(...wrapLine(raw, font, OVERFLOW_FONT_SIZE, maxWidth));
+  }
+
+  // Split into pages.
+  const chunks: string[][] = [];
+  for (let i = 0; i < allLines.length; i += linesPerPage) {
+    chunks.push(allLines.slice(i, i + linesPerPage));
+  }
+
+  for (let i = 0; i < chunks.length; i++) {
+    await insertOverflowTemplatePage(pdfDoc, srcBytes, insertAtIdx + i, chunks[i], font);
+  }
+  return chunks.length;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Annex page renderer — fallback when no dedicated overflow template
+// exists (currently: inventário, armas extras). Draws plain text on a
+// new A4 page using the standard Helvetica font (CP1252 only;
+// sanitize already filters).
 // ────────────────────────────────────────────────────────────────────
 
 const ANNEX_PAGE_WIDTH = 595; // A4 @ 72dpi
@@ -525,9 +645,6 @@ async function appendAnnexPages(pdfDoc: PDFDocument, title: string, body: string
   }
 }
 
-// Form-field char capacity is roughly bounded by smallest font.
-// Above ~3500 chars the field starts clipping even at 8pt — annex it.
-const ANNEX_THRESHOLD = 3500;
 
 // ────────────────────────────────────────────────────────────────────
 // Magia formatter — header (tipo/círculo/escola/exec/alcance/alvo/duração/resistência),
@@ -854,17 +971,19 @@ export async function buildAndOpenPDF(
     setCheckBox(form, `treinado${idx + 1}`, treinada);
   });
 
-  // 8) Magias (item.type === "magia")
+  // 8) Magias (item.type === "magia") — split at line boundary so first
+  //    chunk fits the Atualização field; rest goes to dedicated overflow pages.
   const magias = items.filter((i) => (i.type as string) === "magia");
-  const magiasText = magias
+  const magiasTextFull = magias
     .map((i) => formatMagia(i as unknown as FoundryItemLike, sys, nivel))
     .join("\n\n");
-  setText(form, "Atualização", sanitize(magiasText));
-  autoFontSize(form, "Atualização", magiasText.length);
+  const [magMain, magOverflow] = splitAtLineBoundary(magiasTextFull, MAIN_FIELD_CAP);
+  setText(form, "Atualização", sanitize(magMain));
+  autoFontSize(form, "Atualização", magMain.length);
 
-  // 9) Poderes (item.type === "poder") + raça (race + class powers blob)
+  // 9) Poderes (item.type === "poder") — same split.
   const poderes = items.filter((i) => (i.type as string) === "poder");
-  const poderesText = poderes
+  const poderesTextFull = poderes
     .map((i) => {
       const isys = (i.system ?? {}) as AnyRec;
       const subtipo = pickString(isys, "subtipo");
@@ -873,8 +992,9 @@ export async function buildAndOpenPDF(
       return desc ? `${head}: ${desc}` : head;
     })
     .join("\n\n");
-  setText(form, "Historico", sanitize(poderesText));
-  autoFontSize(form, "Historico", poderesText.length);
+  const [podMain, podOverflow] = splitAtLineBoundary(poderesTextFull, MAIN_FIELD_CAP);
+  setText(form, "Historico", sanitize(podMain));
+  autoFontSize(form, "Historico", podMain.length);
 
   // 10) Proficiências (armaduras + armas → nomes legíveis)
   const profArmaduras = (sys.tracos as AnyRec | undefined)?.profArmaduras as AnyRec | undefined;
@@ -888,17 +1008,47 @@ export async function buildAndOpenPDF(
   if (armaNames.length > 0) profsLines.push(`Armas: ${armaNames.join(", ")}`);
   setText(form, "caracteristicas", sanitize(profsLines.join("\n")));
 
-  // 11) Annex pages for overflow content (magias, poderes, inventário, armas extras).
-  // Form fields clip beyond ~3500 chars even at 8pt, so we draw the full text on
-  // appended A4 pages. Order: Magias → Poderes → Inventário → Armas extras.
-  if (magiasText.length > ANNEX_THRESHOLD) {
-    await appendAnnexPages(pdfDoc, "Magias (completo)", magiasText);
+  // 11) Overflow pages for poderes/magias use dedicated single-page
+  // templates (sheet_poderes.pdf / sheet_magias.pdf, or the print variants),
+  // inserted right after the corresponding main-sheet page. Main sheet has
+  // 3 pages: 0=header, 1=poderes (Historico), 2=magias (Atualização).
+  // Order: poderes overflow FIRST (so we know how many pages it added before
+  // computing where magias sits), then magias overflow appended after that.
+  const podTplFile = template === "impressao" ? "sheet-print_poderes.pdf" : "sheet_poderes.pdf";
+  const magTplFile = template === "impressao" ? "sheet-print_magias.pdf" : "sheet_magias.pdf";
+
+  const PODERES_PAGE_IDX = 1;
+  const MAGIAS_PAGE_IDX = 2;
+
+  let podPagesAdded = 0;
+  if (podOverflow.trim()) {
+    const podBytes = await fetchTemplateOptional(podTplFile);
+    if (podBytes) {
+      podPagesAdded = await appendOverflowTemplatePages(
+        pdfDoc,
+        podBytes,
+        podOverflow,
+        PODERES_PAGE_IDX + 1,
+      );
+    } else {
+      // Fallback: plain annex page (template missing).
+      await appendAnnexPages(pdfDoc, "Poderes (continuação)", podOverflow);
+    }
   }
-  if (poderesText.length > ANNEX_THRESHOLD) {
-    await appendAnnexPages(pdfDoc, "Poderes e Habilidades (completo)", poderesText);
+
+  if (magOverflow.trim()) {
+    const magBytes = await fetchTemplateOptional(magTplFile);
+    if (magBytes) {
+      const insertAt = MAGIAS_PAGE_IDX + podPagesAdded + 1;
+      await appendOverflowTemplatePages(pdfDoc, magBytes, magOverflow, insertAt);
+    } else {
+      await appendAnnexPages(pdfDoc, "Magias (continuação)", magOverflow);
+    }
   }
+
+  // Inventário + armas extras still use plain annex pages (no dedicated template).
   if (invOverflowText) {
-    await appendAnnexPages(pdfDoc, "Inventário (completo)", invOverflowText);
+    await appendAnnexPages(pdfDoc, "Inventário (continuação)", invOverflowText);
   }
   if (armasOverflowText) {
     await appendAnnexPages(pdfDoc, "Armas adicionais", armasOverflowText);
