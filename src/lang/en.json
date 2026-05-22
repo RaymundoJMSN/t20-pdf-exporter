@@ -8,5 +8,9 @@
   "T20PDF.Settings.Template.Name": "PDF Template",
   "T20PDF.Settings.Template.Hint": "Which sheet to use as the base. 'Complete' has the decorative background. 'Print' has a plain background, ink-friendly.",
   "T20PDF.Settings.Template.ChoiceCompleta": "Complete (with decorative background)",
-  "T20PDF.Settings.Template.ChoiceImpressao": "Print (no background, saves ink)"
+  "T20PDF.Settings.Template.ChoiceImpressao": "Print (no background, saves ink)",
+  "T20PDF.UI.ExportFolderZip": "Export folder (ZIP)",
+  "T20PDF.Notify.ExportingFolder": "Zipping \"{name}\"…",
+  "T20PDF.Notify.ExportedFolder": "Folder \"{name}\" exported.",
+  "T20PDF.Notify.ExportFolderFailed": "Folder export failed: {error}"
 }

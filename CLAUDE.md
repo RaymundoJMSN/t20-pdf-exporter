@@ -14,7 +14,7 @@ Foundry VTT module that exports player characters from the **Tormenta 20** syste
 ## Stack
 
 - **Language:** TypeScript (strict).
-- **Bundler:** Vite, lib mode, ESM, single bundle into `dist/module.js`. `pdf-lib` is inlined (bundle ~560 kB, ~190 kB gzipped).
+- **Bundler:** Vite, lib mode, ESM, single bundle into `dist/module.js`. `pdf-lib` and `jszip` are inlined (bundle ~715 kB, ~230 kB gzipped).
 - **PDF lib:** [`pdf-lib`](https://pdf-lib.js.org/). We fill a pre-built AcroForm template from the [`gerador-ficha-tormenta20`](https://github.com/devsacanorpg/gerador-ficha-tormenta20) project. Templates live in `assets/templates/`.
 - **Types:** `fvtt-types` (community Foundry typings, pinned to GitHub `main`). Some v13 hooks and T20-specific types are missing. When that happens:
   - For unknown hook names: `// @ts-expect-error fvtt-types missing this hook key for v13` above the `Hooks.on(...)` call.
@@ -43,6 +43,13 @@ src/
     settings.ts       registerSettings() + getTemplateSetting(). Registers one world-scope client setting
                       `t20-pdf-exporter.pdfTemplate` ("completa" | "impressao", default "completa") that
                       shows up in Game Settings → Configure Settings → Tormenta 20 — Exportador de PDF.
+    bulk-export.ts    registerBulkExport(). Adds a "Exportar pasta (ZIP)" entry to the v13
+                      `getFolderContextOptions` hook (fires for both Sidebar DocumentDirectory folders
+                      and CompendiumDirectory folders). Walks the folder tree recursively, serializing
+                      each document via Foundry's `doc.toObject()` into one JSON file per document, and
+                      mirroring the subfolder hierarchy as ZIP directories. Compendium folders trigger
+                      `pack.getDocuments()` once per pack (cached) and then filter by `folder.id`. Uses
+                      `jszip` to build the archive client-side and a hidden `<a download>` to save it.
     ui.ts             registerUI(). Hooks:
                        - getActorSheetHeaderButtons → sheet header "Exportar PDF" button.
                        - getActorContextOptions    → v13 sidebar right-click entry. NOT getActorDirectoryEntryContext
@@ -214,6 +221,16 @@ Known gaps (intentional MVP):
 - Skill totals trust `actor.system.pericias.*.value` (Foundry computed); we don't recompute bonuses from items.
 - Ofício composto: we union the 6 sub-skills into one line — won't show separate trained sub-perícias.
 - Weapon attack bonus assumes the skill atributo is the canonical one for that skill (luta→for, pontaria→des). Doesn't honor character-level skill atributo overrides via `actor.system.pericias[skill].atributo` overrides set by GMs.
+
+## Bulk-export folders (companion feature)
+
+Distinct from the PDF export pipeline. Right-click any sidebar or compendium folder → "Exportar pasta (ZIP)" → downloads a ZIP that mirrors the folder hierarchy, with each document serialized to a JSON file (same shape as Foundry's per-document "Exportar Dados"). Subfolders become ZIP subdirectories recursively. Implemented in [src/scripts/bulk-export.ts](src/scripts/bulk-export.ts) via the v13 `getFolderContextOptions` hook (covers both `DocumentDirectory` and `CompendiumDirectory`).
+
+Caveats:
+- Compendium-level export (right-click the pack itself) isn't wired — only folders inside a compendium. Foundry v13 doesn't expose a `getCompendiumContextOptions` hook in `fvtt-types`; would need a per-pack workaround.
+- File names are derived from `doc.name`; collisions inside the same folder get a `(2)`, `(3)` suffix. Path-unsafe characters (`\\ / : * ? " < > |`) are replaced with `_`.
+
+> The module id is still `t20-pdf-exporter` (named when the only feature was the PDF builder). The bulk-export feature is system-agnostic. If we ever add more general-purpose features, consider renaming — but renaming breaks the junction, every existing user's setting key, and the Foundry installation flow.
 
 ## What's intentionally out of scope (for now)
 
