@@ -24,7 +24,6 @@
     ]
   },
   "esmodules": ["dist/module.js"],
-  "styles": ["dist/module.css"],
   "languages": [
     {
       "lang": "pt-BR",
@@ -37,9 +36,7 @@
       "path": "src/lang/en.json"
     }
   ],
-  "url": "",
-  "manifest": "",
-  "download": "",
+  "url": "https://github.com/RaymundoJMSN/t20-pdf-exporter",
   "license": "LICENSE",
   "readme": "README.md"
 }
