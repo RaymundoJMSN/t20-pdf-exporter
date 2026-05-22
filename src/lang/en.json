@@ -4,5 +4,9 @@
   "T20PDF.Notify.NoActor": "No actor selected.",
   "T20PDF.Notify.NotCharacter": "Only player characters can be exported.",
   "T20PDF.Notify.Exporting": "Generating PDF for {name}…",
-  "T20PDF.Notify.ExportFailed": "PDF export failed: {error}"
+  "T20PDF.Notify.ExportFailed": "PDF export failed: {error}",
+  "T20PDF.Settings.Template.Name": "PDF Template",
+  "T20PDF.Settings.Template.Hint": "Which sheet to use as the base. 'Complete' has the decorative background. 'Print' has a plain background, ink-friendly.",
+  "T20PDF.Settings.Template.ChoiceCompleta": "Complete (with decorative background)",
+  "T20PDF.Settings.Template.ChoiceImpressao": "Print (no background, saves ink)"
 }
