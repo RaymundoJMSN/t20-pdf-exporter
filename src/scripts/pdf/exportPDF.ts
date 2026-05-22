@@ -307,18 +307,8 @@ function setDropdown(form: PDFForm, name: string, option: string): void {
   }
 }
 
-function autoFontSize(form: PDFForm, name: string, len: number): void {
-  try {
-    const f = form.getTextField(name);
-    if (len > 9000) f.setFontSize(8);
-    else if (len > 6000) f.setFontSize(9);
-    else if (len > 4000) f.setFontSize(10);
-    else if (len > 2500) f.setFontSize(11);
-    else f.setFontSize(12);
-  } catch {
-    /* ignore */
-  }
-}
+// (autoFontSize removed — Historico and Atualização now use a fixed
+// POD_MAG_FONT_SIZE so main and overflow pages stay visually consistent.)
 
 // ────────────────────────────────────────────────────────────────────
 // Arma + armadura formatters
@@ -469,9 +459,14 @@ function formatArmadura(item: FoundryItemLike): ArmaduraSummary {
 // 6 templates). Coordinates are PDF userspace: (x1, y1) bottom-left,
 // (x2, y2) top-right.
 const OVERFLOW_RECT = { x: 35.5, y: 43.3, x2: 536.8, y2: 717.0 };
-// Char count above which the main sheet field starts clipping even at 8pt;
-// content past this cut goes to dedicated overflow pages.
-const MAIN_FIELD_CAP = 3000;
+// Fixed font size used by Historico / Atualização (main + overflow). User
+// asked for a single size across all pages so the overflow pages don't look
+// different from the main one.
+const POD_MAG_FONT_SIZE = 14;
+// Char count that fits one Historico/Atualização page at POD_MAG_FONT_SIZE.
+// At 14pt, the (~501 × 674)pt rect holds roughly 40 lines × ~60 chars wrapped.
+// 2200 is conservative; lower if users still see content cut at the bottom.
+const MAIN_FIELD_CAP = 2200;
 
 async function fetchTemplateOptional(file: string): Promise<ArrayBuffer | null> {
   try {
@@ -507,15 +502,26 @@ function chunkByLineBoundary(text: string, capPerPage: number): string[] {
   return chunks;
 }
 
-/** Auto font size for an overflow form field based on chunk length. Mirrors
- *  the heuristic used by `autoFontSize` for the main fields so the rendered
- *  text on overflow pages looks the same as the main page. */
-function applyAutoFontSize(field: ReturnType<PDFForm["getTextField"]>, len: number): void {
-  if (len > 9000) field.setFontSize(8);
-  else if (len > 6000) field.setFontSize(9);
-  else if (len > 4000) field.setFontSize(10);
-  else if (len > 2500) field.setFontSize(11);
-  else field.setFontSize(12);
+/** Force a known font size on a text field. Tries setFontSize first; if the
+ *  field has no /DA yet (freshly-created), seeds a default appearance string
+ *  then retries. pdf-lib's setFontSize parses /DA and mutates its size token,
+ *  so /DA must exist before the call. */
+function forceFontSize(
+  field: ReturnType<PDFForm["getTextField"]>,
+  size: number,
+): void {
+  try {
+    field.setFontSize(size);
+  } catch {
+    // Seed a /DA with /Helv (the AcroForm shorthand for Helvetica, which is
+    // the form's default resource) and retry.
+    field.acroField.setDefaultAppearance(`/Helv ${size} Tf 0 0 0 rg`);
+    try {
+      field.setFontSize(size);
+    } catch {
+      /* size baked into /DA string above is enough — give up if still failing */
+    }
+  }
 }
 
 /** Copy an overflow-template page into `pdfDoc`, strip its form-field
@@ -544,9 +550,13 @@ async function insertOverflowTemplatePage(
   const destForm = pdfDoc.getForm();
   const uniqueName = `${baseFieldName}_ovr_${overflowIdx}`;
   const field = destForm.createTextField(uniqueName);
+  // Seed /DA before setText/setFontSize — freshly-created text fields have
+  // no /DA entry and pdf-lib throws "No /DA (default appearance) entry
+  // found" otherwise.
+  field.acroField.setDefaultAppearance(`/Helv ${POD_MAG_FONT_SIZE} Tf 0 0 0 rg`);
   field.enableMultiline();
   field.setText(sanitize(chunkText));
-  applyAutoFontSize(field, chunkText.length);
+  forceFontSize(field, POD_MAG_FONT_SIZE);
   field.addToPage(copied, {
     x: OVERFLOW_RECT.x,
     y: OVERFLOW_RECT.y,
@@ -994,7 +1004,11 @@ export async function buildAndOpenPDF(
     .join("\n\n");
   const [magMain, magOverflow] = splitAtLineBoundary(magiasTextFull, MAIN_FIELD_CAP);
   setText(form, "Atualização", sanitize(magMain));
-  autoFontSize(form, "Atualização", magMain.length);
+  try {
+    forceFontSize(form.getTextField("Atualização"), POD_MAG_FONT_SIZE);
+  } catch {
+    /* Atualização field missing — ignore */
+  }
 
   // 9) Poderes (item.type === "poder") — same split.
   const poderes = items.filter((i) => (i.type as string) === "poder");
@@ -1009,7 +1023,11 @@ export async function buildAndOpenPDF(
     .join("\n\n");
   const [podMain, podOverflow] = splitAtLineBoundary(poderesTextFull, MAIN_FIELD_CAP);
   setText(form, "Historico", sanitize(podMain));
-  autoFontSize(form, "Historico", podMain.length);
+  try {
+    forceFontSize(form.getTextField("Historico"), POD_MAG_FONT_SIZE);
+  } catch {
+    /* Historico field missing — ignore */
+  }
 
   // 10) Proficiências (armaduras + armas → nomes legíveis)
   const profArmaduras = (sys.tracos as AnyRec | undefined)?.profArmaduras as AnyRec | undefined;
