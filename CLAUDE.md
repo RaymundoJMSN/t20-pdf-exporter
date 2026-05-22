@@ -80,7 +80,8 @@ Foundry T20 stores characters as denormalized data on `actor.system` + `actor.it
 | Ofício (composto) | sub-keys: `alfa, alqu, arme, arte, cozi, enge` — MVP coalesces them into one "Ofício" line |
 | Tracos | `actor.system.tracos.{tamanho, profArmaduras.value[], profArmas.value[], resistencias.*}` |
 | Detalhes (textos livres) | `actor.system.detalhes.{origem, divindade, raca, biography.value}` |
-| Itens | `actor.items.contents[]` — each has `.type` and `.system.*`. Types we read: `race`, `classe`, `equipamento`, `magia`, `poder`. |
+| Itens | `actor.items.contents[]` — each has `.type` and `.system.*`. Types we read: `race`, `classe`, `arma`, `equipamento`, `consumivel`, `tesouro`, `magia`, `poder`. |
+| Carga (runtime) | `actor.system.attributes.carga.{value, limit, max}` — already computed by the T20 system (accounts for size, equipped vs carregado, mods). The source JSON dump shows zeros; trust runtime. Fallback only when all three are zero: `5 + Força` as max, sum `espacos*qtd` across gear as current. |
 
 Sample dumps lived in `E:\rayna\Downloads\fvtt-Actor-*.json` (Vidente/Oráculo, Ben 10, Conquista). When the schema is unclear, the user can re-export an actor as JSON from Foundry — right-click in the Actors sidebar → "Exportar Dados".
 
@@ -162,8 +163,10 @@ Templates inherit from the [`gerador-ficha-tormenta20`](https://github.com/devsa
 - Atributos: `modFor/Des/Con/Int/Sab/Car` (modifier with sign).
 - Combat block: `vidaMax`, `manaMax`, `Texto13` (defesa), `metadeDoNivel`, dropdown `modDef` defaulted to `modDes`.
 - `deslocamento` (base walk + extras).
-- Carga: `cargaAtual`, `cargaMaxima` (5 + Força), `levantar` (×2).
-- Inventário: `item1` (first 1000 chars), `item2` (next 1000).
+- Carga: `cargaAtual`, `cargaMaxima`, `levantar`. Read from `actor.system.attributes.carga.{value, limit, max}` at runtime. `levantar` = `max × 2` per T20.
+- Inventário: `item1` (first 1000 chars), `item2` (next 1000). Source = `equipamento` (excluding armor) + `consumivel` + `tesouro`, each section prefixed by a heading line ("Equipamentos:" / "Consumíveis:" / "Tesouros e Itens:"). Armas go to dedicated ataque slots, armaduras to armadura slots.
+- Armas (até 5): `tAtak{N}` (nome), `ataque{N}` (+bônus computado), `dano{N}` (formula com `@for/@des/...` resolvido), `critico{N}` ("19/x2"), `alcance{N}` (Curto/Médio/Longo/—), `tipo{N}` (Impacto/Corte/Perfuração/Cura PV/elemental). Bônus de ataque = `meio_nivel + atributoMod(skillAtr) + treinamento(skillKey) + bonus_da_rolagem`. `skillKey` vem de `item.system.rolls[].parts[1]` (luta/pontaria/etc); `skillAtr` mapeia via `pericias[skillKey].atributo` (luta→for, pontaria→des).
+- Armaduras (até 2): `armadura{N}` (nome), `defesa{N}` (`item.system.armadura.value`), `penalidade{N}` (`item.system.armadura.penalidade`). Filtro: `equipamento.system.tipo ∈ {leve, pes, pesada, esc, escudo}`.
 - Perícias: 29 rows, alphabetical. Per row index N (0-based):
   - Total: `total{N+1}` (template has a typo `tota23` at N=22 — handled).
   - Treinamento: `treino{N}`.
@@ -178,10 +181,19 @@ Templates inherit from the [`gerador-ficha-tormenta20`](https://github.com/devsa
 - Poderes + habilidades: `Historico` (auto-sized).
 - Proficiências: `caracteristicas`. Codes mapped via `PROF_ARMADURA` / `PROF_ARMA`. Output groups: `Armaduras: Leve, Pesada, Escudo` / `Armas: Simples, Marcial`.
 
+## Annex pages (overflow handling)
+
+Form-field text in the template clips around ~3500 chars even after auto-font-shrinking to 8pt. When a character has many magias, poderes, items, or weapons, the rendered field is silently truncated. To prevent data loss, the builder appends extra A4 pages at the end of the PDF whenever any of these exceeds `ANNEX_THRESHOLD` (3500 chars) — or, for weapons specifically, exceeds 5 entries.
+
+- Implementation: `appendAnnexPages(pdfDoc, title, body)` in [src/scripts/pdf/exportPDF.ts](src/scripts/pdf/exportPDF.ts).
+- Font: embedded `StandardFonts.Helvetica` / `HelveticaBold`. WinAnsi only — `sanitize()` is still required.
+- Layout: A4 portrait (595×842pt), 40pt margin, 9pt body / 14pt title, manual word-wrap via `font.widthOfTextAtSize`. Auto-paginates: when the cursor would fall below the bottom margin, a fresh page with a `(cont.)` title is appended.
+- Order of appended sections: Magias → Poderes → Inventário → Armas extras (only the ones present). Each gets its own annex page(s).
+
 Known gaps (intentional MVP):
-- Armas / armaduras don't fill dedicated `ataque{1..5}` / `armadura{1..2}` slots — everything is dumped into the inventory blob.
 - Skill totals trust `actor.system.pericias.*.value` (Foundry computed); we don't recompute bonuses from items.
 - Ofício composto: we union the 6 sub-skills into one line — won't show separate trained sub-perícias.
+- Weapon attack bonus assumes the skill atributo is the canonical one for that skill (luta→for, pontaria→des). Doesn't honor character-level skill atributo overrides via `actor.system.pericias[skill].atributo` overrides set by GMs.
 
 ## What's intentionally out of scope (for now)
 

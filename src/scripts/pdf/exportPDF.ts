@@ -7,7 +7,7 @@
 // from the standalone T20-DB exporter (see CLAUDE.md → Credits).
 // ────────────────────────────────────────────────────────────────────
 
-import { PDFDocument, type PDFForm } from "pdf-lib";
+import { PDFDocument, type PDFFont, type PDFForm, StandardFonts } from "pdf-lib";
 import { MODULE_ID } from "../../constants";
 
 export type PDFTemplate = "completa" | "impressao";
@@ -315,6 +315,221 @@ function autoFontSize(form: PDFForm, name: string, len: number): void {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// Arma + armadura formatters
+// ────────────────────────────────────────────────────────────────────
+
+const ATAQUE_ALCANCE: Record<string, string> = {
+  "": "—",
+  curto: "Curto",
+  medio: "Médio",
+  longo: "Longo",
+  curt: "Curto",
+};
+
+const DANO_TIPO: Record<string, string> = {
+  impacto: "Impacto",
+  corte: "Corte",
+  perfuracao: "Perfuração",
+  curapv: "Cura PV",
+  curapm: "Cura PM",
+  acido: "Ácido",
+  eletricidade: "Eletricidade",
+  fogo: "Fogo",
+  frio: "Frio",
+  essencia: "Essência",
+  luz: "Luz",
+  psiquico: "Psíquico",
+  trevas: "Trevas",
+};
+
+// Replace `@for`/`@des`/etc in a damage formula part with the numeric mod.
+function resolveAttrTokens(formula: string, sys: AnyRec): string {
+  return formula.replace(/@(for|des|con|int|sab|car)/gi, (_m, atr: string) => {
+    const v = atributoTotal(sys, atr.toLowerCase() as Atr);
+    return v >= 0 ? `+${v}` : String(v);
+  });
+}
+
+interface ArmaSummary {
+  nome: string;
+  ataque: string;
+  dano: string;
+  critico: string;
+  alcance: string;
+  tipo: string;
+}
+
+function periciaTreinada(sys: AnyRec, key: string): boolean {
+  const node = (sys.pericias as AnyRec | undefined)?.[key] as AnyRec | undefined;
+  return node?.treinado === true;
+}
+
+function formatArma(item: FoundryItemLike, sys: AnyRec, nivel: number): ArmaSummary {
+  const isys = (item.system ?? {}) as AnyRec;
+  const rolls = Array.isArray(isys.rolls) ? (isys.rolls as AnyRec[]) : [];
+
+  // Ataque roll — parts[0]=dice, parts[1]=skill key (e.g. "luta"|"pontaria"), parts[2]=bonus.
+  const atkRoll = rolls.find((r) => r.type === "ataque");
+  let ataqueStr = "";
+  if (atkRoll) {
+    const parts = Array.isArray(atkRoll.parts) ? (atkRoll.parts as unknown[][]) : [];
+    const skillKey = String(parts[1]?.[0] ?? "luta");
+    const bonus = Number(parts[2]?.[0] ?? 0) || 0;
+    // Skill atributo lookup via PERICIAS table (luta→for, pontaria→des).
+    const skillAtr: Atr =
+      skillKey === "pontaria"
+        ? "des"
+        : skillKey === "luta"
+          ? "for"
+          : (((sys.pericias as AnyRec | undefined)?.[skillKey] as AnyRec | undefined)
+              ?.atributo as Atr) ?? "for";
+    const atrMod = atributoTotal(sys, skillAtr);
+    const treino = periciaTreinada(sys, skillKey) ? bonusTreinoT20(nivel) : 0;
+    const total = meioNivel(nivel) + atrMod + treino + bonus;
+    ataqueStr = total >= 0 ? `+${total}` : String(total);
+  }
+
+  // Dano roll(s) — multiple "dano" rolls possible (versatil). Use first.
+  const danoRoll = rolls.find((r) => r.type === "dano");
+  let danoStr = "";
+  let tipoStr = "";
+  if (danoRoll) {
+    const parts = Array.isArray(danoRoll.parts) ? (danoRoll.parts as unknown[][]) : [];
+    const danoBits: string[] = [];
+    for (const p of parts) {
+      const expr = String(p?.[0] ?? "").trim();
+      const t = String(p?.[1] ?? "").trim();
+      if (!expr) continue;
+      const resolved = resolveAttrTokens(expr, sys);
+      danoBits.push(resolved);
+      if (t && !tipoStr) tipoStr = lookupOrTitle(DANO_TIPO, t);
+    }
+    danoStr = danoBits.join("").replace(/^\+/, ""); // strip leading +
+  }
+
+  // Critico: "20 / x2", "19 / x3", default "20/x2".
+  const cm = pickNumber(isys, "criticoM") || 20;
+  const cx = pickNumber(isys, "criticoX") || 2;
+  const criticoStr = `${cm}/x${cx}`;
+
+  // Alcance: raw value or "—" for melee.
+  const alcanceRaw = pickString(isys, "alcance");
+  const alcanceStr = alcanceRaw ? lookupOrTitle(ATAQUE_ALCANCE, alcanceRaw) : "—";
+
+  return {
+    nome: item.name ?? "Arma",
+    ataque: ataqueStr,
+    dano: danoStr,
+    critico: criticoStr,
+    alcance: alcanceStr,
+    tipo: tipoStr || "—",
+  };
+}
+
+interface ArmaduraSummary {
+  nome: string;
+  defesa: string;
+  penalidade: string;
+}
+
+// equipamento.system.tipo values seen: "leve" / "pes" (pesada) → armor. "esc" / "escudo" → shield.
+function isArmadura(isys: AnyRec): boolean {
+  const tipo = pickString(isys, "tipo");
+  return tipo === "leve" || tipo === "pes" || tipo === "pesada" || tipo === "esc" || tipo === "escudo";
+}
+
+function formatArmadura(item: FoundryItemLike): ArmaduraSummary {
+  const isys = (item.system ?? {}) as AnyRec;
+  const armaduraNode = isys.armadura as AnyRec | undefined;
+  const defesaVal = pickNumber(armaduraNode, "value");
+  const penVal = pickNumber(armaduraNode, "penalidade");
+  return {
+    nome: item.name ?? "Armadura",
+    defesa: defesaVal > 0 ? `+${defesaVal}` : String(defesaVal),
+    penalidade: penVal !== 0 ? String(penVal) : "0",
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Annex page renderer — used when magias/poderes/inventário overflow
+// the AcroForm text field. Draws plain text on a new A4 page using
+// the standard Helvetica font (CP1252 only; sanitize already filters).
+// ────────────────────────────────────────────────────────────────────
+
+const ANNEX_PAGE_WIDTH = 595; // A4 @ 72dpi
+const ANNEX_PAGE_HEIGHT = 842;
+const ANNEX_MARGIN = 40;
+const ANNEX_FONT_SIZE = 9;
+const ANNEX_TITLE_SIZE = 14;
+const ANNEX_LINE_HEIGHT = 12;
+
+function wrapLine(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+  if (!text) return [""];
+  const words = text.split(/(\s+)/);
+  const out: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const trial = cur + w;
+    const width = font.widthOfTextAtSize(trial, size);
+    if (width > maxWidth && cur) {
+      out.push(cur);
+      cur = w.replace(/^\s+/, "");
+    } else {
+      cur = trial;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+async function appendAnnexPages(pdfDoc: PDFDocument, title: string, body: string): Promise<void> {
+  const text = sanitize(body);
+  if (!text.trim()) return;
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const maxWidth = ANNEX_PAGE_WIDTH - ANNEX_MARGIN * 2;
+
+  // Pre-wrap every source line so pagination is just "fits in remaining height?".
+  const wrappedLines: { text: string; bold?: boolean }[] = [];
+  for (const rawLine of text.split("\n")) {
+    if (rawLine === "") {
+      wrappedLines.push({ text: "" });
+      continue;
+    }
+    for (const w of wrapLine(rawLine, font, ANNEX_FONT_SIZE, maxWidth)) {
+      wrappedLines.push({ text: w });
+    }
+  }
+
+  let page = pdfDoc.addPage([ANNEX_PAGE_WIDTH, ANNEX_PAGE_HEIGHT]);
+  let y = ANNEX_PAGE_HEIGHT - ANNEX_MARGIN;
+  page.drawText(title, { x: ANNEX_MARGIN, y: y - ANNEX_TITLE_SIZE, font: fontBold, size: ANNEX_TITLE_SIZE });
+  y -= ANNEX_TITLE_SIZE + 10;
+
+  for (const line of wrappedLines) {
+    if (y - ANNEX_LINE_HEIGHT < ANNEX_MARGIN) {
+      page = pdfDoc.addPage([ANNEX_PAGE_WIDTH, ANNEX_PAGE_HEIGHT]);
+      y = ANNEX_PAGE_HEIGHT - ANNEX_MARGIN;
+      page.drawText(`${title} (cont.)`, {
+        x: ANNEX_MARGIN,
+        y: y - ANNEX_TITLE_SIZE,
+        font: fontBold,
+        size: ANNEX_TITLE_SIZE,
+      });
+      y -= ANNEX_TITLE_SIZE + 10;
+    }
+    if (line.text) {
+      page.drawText(line.text, { x: ANNEX_MARGIN, y, font, size: ANNEX_FONT_SIZE });
+    }
+    y -= ANNEX_LINE_HEIGHT;
+  }
+}
+
+// Form-field char capacity is roughly bounded by smallest font.
+// Above ~3500 chars the field starts clipping even at 8pt — annex it.
+const ANNEX_THRESHOLD = 3500;
+
+// ────────────────────────────────────────────────────────────────────
 // Magia formatter — header (tipo/círculo/escola/exec/alcance/alvo/duração/resistência),
 // description, then aprimoramentos derived from effects[].flags.tormenta20.custo.
 // ────────────────────────────────────────────────────────────────────
@@ -497,31 +712,101 @@ export async function buildAndOpenPDF(
   const deslocText = extras.length > 0 ? `${walk} (${extras.join(", ")})` : String(walk);
   setText(form, "deslocamento", sanitize(deslocText));
 
-  // 6) Inventário + carga
-  const equips = items.filter((i) => (i.type as string) === "equipamento");
-  const invLines = equips.map((i) => {
+  // 6) Carga — trust the runtime-computed actor.system.attributes.carga.{value,limit,max}
+  // (Foundry T20 already accounts for size, items, modifiers). Fallback to
+  // 5 + Força (medium-size formula) only if all three values are zero.
+  const cargaNode = (sys.attributes as AnyRec | undefined)?.carga as AnyRec | undefined;
+  const cargaValue = pickNumber(cargaNode, "value");
+  const cargaLimit = pickNumber(cargaNode, "limit");
+  const cargaMax = pickNumber(cargaNode, "max");
+  if (cargaValue || cargaLimit || cargaMax) {
+    setText(form, "cargaAtual", String(cargaValue));
+    setText(form, "cargaMaxima", String(cargaLimit || cargaMax));
+    setText(form, "levantar", String(cargaMax * 2 || cargaLimit * 4));
+  } else {
+    const forVal = atributoTotal(sys, "for");
+    const fallbackMax = 5 + Math.max(0, forVal);
+    // Sum espaços across all gear (equipamento + arma + consumivel + tesouro).
+    const gear = items.filter((i) => {
+      const t = i.type as string;
+      return t === "equipamento" || t === "arma" || t === "consumivel" || t === "tesouro";
+    });
+    const fallbackAtual = gear.reduce((sum, i) => {
+      const isys = (i.system ?? {}) as AnyRec;
+      const qtd = typeof isys.qtd === "number" ? isys.qtd : 1;
+      const esp = typeof isys.espacos === "number" ? isys.espacos : 0;
+      return sum + esp * qtd;
+    }, 0);
+    setText(form, "cargaAtual", String(fallbackAtual));
+    setText(form, "cargaMaxima", String(fallbackMax));
+    setText(form, "levantar", String(fallbackMax * 2));
+  }
+
+  // 6b) Inventário categorizado (Equipamentos / Consumíveis / Tesouros).
+  // Armas e armaduras saem dessa lista — vão pros slots dedicados abaixo.
+  const armas = items.filter((i) => (i.type as string) === "arma");
+  const armaduras = items.filter(
+    (i) => (i.type as string) === "equipamento" && isArmadura((i.system ?? {}) as AnyRec),
+  );
+  const armaduraIds = new Set(armaduras.map((i) => (i as { id?: string }).id ?? i.name));
+  const equipsGerais = items.filter(
+    (i) => (i.type as string) === "equipamento" && !armaduraIds.has((i as { id?: string }).id ?? i.name),
+  );
+  const consumiveis = items.filter((i) => (i.type as string) === "consumivel");
+  const tesouros = items.filter((i) => (i.type as string) === "tesouro");
+
+  const formatItem = (i: typeof items[number]): string => {
     const isys = (i.system ?? {}) as AnyRec;
     const qtd = typeof isys.qtd === "number" ? isys.qtd : 1;
     const esp = typeof isys.espacos === "number" ? isys.espacos : 0;
     const qtdStr = qtd > 1 ? `${qtd}x ` : "";
-    const espStr = esp > 0 ? ` (${esp * qtd} espaços)` : "";
+    const espStr = esp > 0 ? ` (${(esp * qtd).toFixed(1).replace(/\.0$/, "")} esp)` : "";
     return `${qtdStr}${i.name}${espStr}`;
-  });
-  const invSan = sanitize(invLines.join("\n"));
+  };
+
+  const invSections: string[] = [];
+  if (equipsGerais.length > 0)
+    invSections.push("Equipamentos:\n" + equipsGerais.map(formatItem).join("\n"));
+  if (consumiveis.length > 0)
+    invSections.push("Consumíveis:\n" + consumiveis.map(formatItem).join("\n"));
+  if (tesouros.length > 0)
+    invSections.push("Tesouros e Itens:\n" + tesouros.map(formatItem).join("\n"));
+  const invSan = sanitize(invSections.join("\n\n"));
   setText(form, "item1", invSan.slice(0, 1000));
   setText(form, "item2", invSan.slice(1000, 2000));
+  // Overflow into annex page when total > 2000 chars.
+  let invOverflowText = "";
+  if (invSan.length > 2000) invOverflowText = invSan;
 
-  const cargaAtual = equips.reduce((sum, i) => {
-    const isys = (i.system ?? {}) as AnyRec;
-    const qtd = typeof isys.qtd === "number" ? isys.qtd : 1;
-    const esp = typeof isys.espacos === "number" ? isys.espacos : 0;
-    return sum + esp * qtd;
-  }, 0);
-  const forVal = atributoTotal(sys, "for");
-  const maxSpaces = 5 + Math.max(0, forVal);
-  setText(form, "cargaAtual", String(cargaAtual));
-  setText(form, "cargaMaxima", String(maxSpaces));
-  setText(form, "levantar", String(maxSpaces * 2));
+  // 6c) Armas → ataque1..5 / dano1..5 / critico1..5 / alcance1..5 / tipo1..5 / tAtak1..5
+  const armaSummaries = armas.slice(0, 5).map((i) => formatArma(i as unknown as FoundryItemLike, sys, nivel));
+  armaSummaries.forEach((s, idx) => {
+    const n = idx + 1;
+    setText(form, `tAtak${n}`, sanitize(s.nome));
+    setText(form, `ataque${n}`, s.ataque);
+    setText(form, `dano${n}`, sanitize(s.dano));
+    setText(form, `critico${n}`, s.critico);
+    setText(form, `alcance${n}`, sanitize(s.alcance));
+    setText(form, `tipo${n}`, sanitize(s.tipo));
+  });
+  // Overflow weapons → annex.
+  let armasOverflowText = "";
+  if (armas.length > 5) {
+    const extras = armas.slice(5).map((i, idx) => {
+      const s = formatArma(i as unknown as FoundryItemLike, sys, nivel);
+      return `${idx + 6}. ${s.nome}\n   Ataque: ${s.ataque} | Dano: ${s.dano} ${s.tipo ? `(${s.tipo})` : ""} | Crítico: ${s.critico} | Alcance: ${s.alcance}`;
+    });
+    armasOverflowText = "Armas extras (não couberam nos 5 slots):\n\n" + extras.join("\n\n");
+  }
+
+  // 6d) Armaduras → armadura1..2 / defesa1..2 / penalidade1..2
+  const armaduraSummaries = armaduras.slice(0, 2).map((i) => formatArmadura(i as unknown as FoundryItemLike));
+  armaduraSummaries.forEach((s, idx) => {
+    const n = idx + 1;
+    setText(form, `armadura${n}`, sanitize(s.nome));
+    setText(form, `defesa${n}`, s.defesa);
+    setText(form, `penalidade${n}`, s.penalidade);
+  });
 
   // 7) Perícias (29 linhas; template has typo `tota23` at index 22)
   PERICIAS.forEach((row, idx) => {
@@ -569,7 +854,23 @@ export async function buildAndOpenPDF(
   if (armaNames.length > 0) profsLines.push(`Armas: ${armaNames.join(", ")}`);
   setText(form, "caracteristicas", sanitize(profsLines.join("\n")));
 
-  // 11) Metadata + open
+  // 11) Annex pages for overflow content (magias, poderes, inventário, armas extras).
+  // Form fields clip beyond ~3500 chars even at 8pt, so we draw the full text on
+  // appended A4 pages. Order: Magias → Poderes → Inventário → Armas extras.
+  if (magiasText.length > ANNEX_THRESHOLD) {
+    await appendAnnexPages(pdfDoc, "Magias (completo)", magiasText);
+  }
+  if (poderesText.length > ANNEX_THRESHOLD) {
+    await appendAnnexPages(pdfDoc, "Poderes e Habilidades (completo)", poderesText);
+  }
+  if (invOverflowText) {
+    await appendAnnexPages(pdfDoc, "Inventário (completo)", invOverflowText);
+  }
+  if (armasOverflowText) {
+    await appendAnnexPages(pdfDoc, "Armas adicionais", armasOverflowText);
+  }
+
+  // 12) Metadata + open
   pdfDoc.setTitle(`Ficha de ${actor.name ?? "Personagem"}`);
   pdfDoc.setAuthor(MODULE_ID);
   const out = await pdfDoc.save();
