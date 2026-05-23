@@ -149,22 +149,65 @@ function safeFileName(name: string | null | undefined): string {
   return s.replace(/^[.\s]+|[.\s]+$/g, "") || "untitled";
 }
 
-/** Download a blob as a file with the given name. Mirrors Foundry's own
- *  `foundry.utils.saveDataToFile` pattern (plain Blob, anchor with
- *  `setAttribute("download", ...)`, brief setTimeout for cleanup), which is
- *  the version Foundry's per-document "Export Data" uses and the one that
- *  actually honors the `download` attribute in Electron. Earlier attempt
- *  wrapped the blob in a `File` constructor + set rel/target/display — that
- *  defeated the download attribute and made Electron save as the blob URL's
- *  UUID. Also caused a black-screen flash because Electron treated the click
- *  as a navigation. Don't reintroduce those. */
-function downloadBlobAs(blob: Blob, filename: string): void {
-  // Re-wrap as a fresh Blob with an explicit application/zip MIME so
-  // Electron's downloader matches the extension.
+interface FsAccessSaveOptions {
+  suggestedName?: string;
+  types?: Array<{
+    description?: string;
+    accept: Record<string, string[]>;
+  }>;
+}
+interface FsAccessFileHandle {
+  createWritable: () => Promise<{
+    write: (data: Blob | ArrayBuffer | Uint8Array | string) => Promise<void>;
+    close: () => Promise<void>;
+  }>;
+}
+type ShowSaveFilePicker = (opts: FsAccessSaveOptions) => Promise<FsAccessFileHandle>;
+
+/** Download a blob as a file with the given name.
+ *
+ *  Foundry's Electron build intercepts blob-URL downloads and falls back to
+ *  the blob URL's UUID as the saved filename — the `<a download="…">`
+ *  attribute is ignored for binary blobs (Foundry's own Export Data on
+ *  single documents works only because the underlying Blob is built from a
+ *  short JSON string, which Electron handles via a different code path).
+ *
+ *  Solution: prefer the File System Access API (`showSaveFilePicker`), which
+ *  bypasses Electron's download interceptor entirely and shows a native Save
+ *  As dialog pre-filled with `filename`. Fall back to the anchor pattern
+ *  only when the API is missing (older Electron / unsupported context). */
+async function downloadBlobAs(blob: Blob, filename: string): Promise<void> {
   const wrapped =
     blob.type === "application/zip"
       ? blob
       : new Blob([blob], { type: "application/zip" });
+
+  const showSave = (window as unknown as { showSaveFilePicker?: ShowSaveFilePicker })
+    .showSaveFilePicker;
+  if (typeof showSave === "function") {
+    try {
+      const handle = await showSave({
+        suggestedName: filename,
+        types: [
+          {
+            description: "ZIP archive",
+            accept: { "application/zip": [".zip"] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(wrapped);
+      await writable.close();
+      return;
+    } catch (err) {
+      // AbortError = user cancelled the Save As dialog. Bail silently.
+      if ((err as { name?: string })?.name === "AbortError") return;
+      // Anything else → fall through to the anchor fallback below.
+      console.warn(`[${MODULE_ID}] showSaveFilePicker failed, falling back to anchor`, err);
+    }
+  }
+
+  // Fallback: anchor + download attribute. May land as UUID.zip on Electron.
   const url = URL.createObjectURL(wrapped);
   const a = document.createElement("a");
   a.setAttribute("href", url);
@@ -195,7 +238,7 @@ async function exportFolderAsZip(folder: AnyFolder): Promise<void> {
     await walkFolder(folder, root, packDocsCache);
 
     const blob = await zip.generateAsync({ type: "blob" });
-    downloadBlobAs(blob, `${rootName}.zip`);
+    await downloadBlobAs(blob, `${rootName}.zip`);
 
     ui.notifications?.info(
       game.i18n!.format("T20PDF.Notify.ExportedFolder", { name: folder.name ?? "" }),
@@ -289,7 +332,7 @@ async function exportPackAsZip(pack: AnyPack): Promise<void> {
     writePackNode(root, null, childrenByParent, docsByFolder);
 
     const blob = await zip.generateAsync({ type: "blob" });
-    downloadBlobAs(blob, `${rootName}.zip`);
+    await downloadBlobAs(blob, `${rootName}.zip`);
 
     ui.notifications?.info(
       game.i18n!.format("T20PDF.Notify.ExportedFolder", { name: label }),
