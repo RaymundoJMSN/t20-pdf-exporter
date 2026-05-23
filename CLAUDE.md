@@ -243,7 +243,7 @@ Distinct from the PDF export pipeline. Right-click any sidebar/compendium folder
 
 Implementation notes:
 - File names are derived from `doc.name`; collisions inside the same folder get a `(2)`, `(3)` suffix. Path-unsafe characters (`\\ / : * ? " < > |`) are replaced with `_`.
-- `downloadBlobAs(blob, filename)` wraps the ZIP blob in a `File` before creating the object URL — without that wrapper, Electron's Save-As dialog falls back to the blob URL's UUID for the filename even with `<a download>` set. The anchor stays in the DOM for 1 second after click before cleanup to keep the click event handler alive in slower builds.
+- `downloadBlobAs(blob, filename)` uses the **File System Access API** (`window.showSaveFilePicker`) as the primary path. Foundry's Electron build intercepts blob-URL downloads and renames them to the blob URL's UUID; the `<a download>` attribute is silently ignored for binary blobs (Foundry's own per-document Export Data only works because the underlying Blob comes from a tiny JSON string — different Electron code path). `showSaveFilePicker` bypasses that interceptor and opens a native Save As dialog pre-filled with the correct filename. AbortError = user cancelled, swallowed silently. Anchor + `download` attribute remains as a fallback for environments where the FS Access API is missing.
 
 > The module id is still `t20-pdf-exporter` (named when the only feature was the PDF builder). The bulk-export feature is system-agnostic. If we ever add more general-purpose features, consider renaming — but renaming breaks the junction, every existing user's setting key, and the Foundry installation flow.
 
