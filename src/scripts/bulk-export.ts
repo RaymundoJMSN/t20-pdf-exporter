@@ -149,31 +149,32 @@ function safeFileName(name: string | null | undefined): string {
   return s.replace(/^[.\s]+|[.\s]+$/g, "") || "untitled";
 }
 
-/** Download a blob using a name-bearing File wrapper. The File constructor
- *  carries the filename in the URL's Content-Disposition equivalent, which
- *  fixes the case where Electron-wrapped Chrome falls back to the blob's
- *  UUID-shaped object-URL as the saved name even when `<a download>` is set. */
+/** Download a blob as a file with the given name. Mirrors Foundry's own
+ *  `foundry.utils.saveDataToFile` pattern (plain Blob, anchor with
+ *  `setAttribute("download", ...)`, brief setTimeout for cleanup), which is
+ *  the version Foundry's per-document "Export Data" uses and the one that
+ *  actually honors the `download` attribute in Electron. Earlier attempt
+ *  wrapped the blob in a `File` constructor + set rel/target/display — that
+ *  defeated the download attribute and made Electron save as the blob URL's
+ *  UUID. Also caused a black-screen flash because Electron treated the click
+ *  as a navigation. Don't reintroduce those. */
 function downloadBlobAs(blob: Blob, filename: string): void {
-  // Coerce to File so the object URL carries a name hint.
-  const file =
-    typeof File !== "undefined"
-      ? new File([blob], filename, { type: blob.type || "application/zip" })
-      : blob;
-  const url = URL.createObjectURL(file);
+  // Re-wrap as a fresh Blob with an explicit application/zip MIME so
+  // Electron's downloader matches the extension.
+  const wrapped =
+    blob.type === "application/zip"
+      ? blob
+      : new Blob([blob], { type: "application/zip" });
+  const url = URL.createObjectURL(wrapped);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.rel = "noopener";
-  a.style.display = "none";
+  a.setAttribute("href", url);
+  a.setAttribute("download", filename);
   document.body.appendChild(a);
-  // Use a real MouseEvent — some Electron builds ignore `.click()` on detached
-  // anchors. The synchronous append/click/remove dance works around it.
   a.click();
-  // Defer cleanup so the click handler fully fires before the anchor is gone.
   setTimeout(() => {
     if (a.parentNode) a.parentNode.removeChild(a);
     URL.revokeObjectURL(url);
-  }, 1000);
+  }, 100);
 }
 
 // ────────────────────────────────────────────────────────────────────
