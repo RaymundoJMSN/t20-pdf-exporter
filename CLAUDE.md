@@ -44,11 +44,17 @@ src/
                       `t20-pdf-exporter.pdfTemplate` ("completa" | "impressao", default "completa") that
                       shows up in Game Settings → Configure Settings → Tormenta 20 — Exportador de PDF.
     bulk-export.ts    registerBulkExport(). Adds two ZIP-export entries to the sidebar context menus:
-                      - "Exportar pasta (ZIP)" on every folder via `getFolderContextOptions` (covers
-                        both world DocumentDirectory and CompendiumDirectory folders).
-                      - "Exportar compêndio (ZIP)" on every compendium pack via the
-                        `getCompendiumDirectoryEntryContext` hook (legacy name still emitted in v13)
-                        with `getCompendiumDirectoryContextOptions` registered as a backup alias.
+                      - "Exportar pasta (ZIP)" on every folder via `getFolderContextOptions`
+                        (single v13 hook covering both world DocumentDirectory and
+                        CompendiumDirectory folders).
+                      - "Exportar compêndio (ZIP)" on every compendium pack — added by
+                        monkey-patching `foundry.applications.sidebar.tabs.CompendiumDirectory
+                        .prototype._getEntryContextOptions`. Foundry v13 does NOT fire a hook
+                        for pack-row right-clicks (tried `getCompendiumDirectoryEntryContext` and
+                        `getCompendiumDirectoryContextOptions` — neither emits); the only stable
+                        way to extend that menu is to wrap the protected method. The patch runs
+                        on the `setup` hook (before CompendiumDirectory is instantiated) and is
+                        idempotent (tagged with `_t20Patched` so HMR/double-load doesn't stack).
                       Walks the relevant tree, serializes each document with `doc.toObject()` into
                       one JSON file, and mirrors the folder hierarchy as ZIP directories. For pack
                       export the folder tree is rebuilt from `pack.folders.contents[]` using each
@@ -232,7 +238,7 @@ Known gaps (intentional MVP):
 
 Distinct from the PDF export pipeline. Right-click any sidebar/compendium folder OR any compendium pack → "Exportar pasta (ZIP)" / "Exportar compêndio (ZIP)" → downloads a ZIP that mirrors the folder hierarchy, with each document serialized to a JSON file (same shape as Foundry's per-document "Exportar Dados"). Subfolders become ZIP subdirectories recursively. Implemented in [src/scripts/bulk-export.ts](src/scripts/bulk-export.ts):
 - Folder right-click uses `getFolderContextOptions` (single v13 hook for both `DocumentDirectory` and `CompendiumDirectory` folders).
-- Compendium pack right-click uses `getCompendiumDirectoryEntryContext` (legacy name) plus `getCompendiumDirectoryContextOptions` as a backup alias — neither is in `fvtt-types`, so both registrations carry `@ts-expect-error`. Whichever Foundry build is loaded picks up the right one.
+- Compendium pack right-click is added by **monkey-patching** `foundry.applications.sidebar.tabs.CompendiumDirectory.prototype._getEntryContextOptions` on the `setup` hook. v13 doesn't emit a usable Hook for that menu (verified empirically — both `getCompendiumDirectoryEntryContext` and `getCompendiumDirectoryContextOptions` are silent). The patch wraps Foundry's original return array and appends our entry; tagged with a `_t20Patched` marker so HMR/reload doesn't stack duplicates.
 - Pack export reads `pack.folders.contents[]` for the folder tree and rebuilds it via each folder's `.folder` parent reference, then groups `pack.getDocuments()` by `doc.folder`.
 
 Implementation notes:
