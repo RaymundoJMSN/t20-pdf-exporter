@@ -50,14 +50,59 @@ export function registerBulkExport(): void {
   // @ts-expect-error fvtt-types doesn't narrow this hook to our handler shape
   Hooks.on("getFolderContextOptions", onFolderContextOptions);
 
-  // Compendium pack-level right-click. The ApplicationV2 CompendiumDirectory
-  // emits its own entry-context hook — name follows the
-  // `get${ApplicationName}EntryContext` convention. Register both the v13
-  // and legacy names so whichever Foundry build is loaded picks it up.
-  // @ts-expect-error fvtt-types may not list these hook keys
-  Hooks.on("getCompendiumDirectoryEntryContext", onCompendiumPackContextOptions);
-  // @ts-expect-error v13 V2-style alias
-  Hooks.on("getCompendiumDirectoryContextOptions", onCompendiumPackContextOptions);
+  // Compendium pack-level right-click. v13's CompendiumDirectory doesn't fire
+  // a documented hook for its entry context menu; the options list is built by
+  // a protected `_getEntryContextOptions()` method on the directory class. We
+  // monkey-patch the method on the prototype so every CompendiumDirectory
+  // instance (Foundry only ever constructs one, but we run on `setup` which
+  // fires before that) gets our entry added to whatever Foundry already
+  // returns.
+  Hooks.once("setup", patchCompendiumDirectoryContext);
+}
+
+interface CompendiumDirectoryClass {
+  prototype: {
+    _getEntryContextOptions?: () => DirectoryContextEntry[];
+  };
+}
+
+function patchCompendiumDirectoryContext(): void {
+  const ns = (globalThis as { foundry?: Record<string, unknown> }).foundry;
+  const sidebarTabs = (ns?.applications as Record<string, unknown> | undefined)?.sidebar as
+    | Record<string, unknown>
+    | undefined;
+  const tabs = sidebarTabs?.tabs as Record<string, unknown> | undefined;
+  const CompendiumDirectory = tabs?.CompendiumDirectory as CompendiumDirectoryClass | undefined;
+  if (!CompendiumDirectory?.prototype) {
+    console.warn(`[${MODULE_ID}] CompendiumDirectory not found — pack export skipped`);
+    return;
+  }
+  const proto = CompendiumDirectory.prototype;
+  const original = proto._getEntryContextOptions;
+  if (!original) {
+    console.warn(`[${MODULE_ID}] _getEntryContextOptions missing — pack export skipped`);
+    return;
+  }
+  // Idempotent — re-running registerBulkExport (HMR / module reload) shouldn't
+  // stack multiple entries on the prototype.
+  if ((proto._getEntryContextOptions as { _t20Patched?: boolean })._t20Patched) return;
+
+  const patched = function (this: unknown): DirectoryContextEntry[] {
+    const options = original.call(this) ?? [];
+    options.push({
+      name: "T20PDF.UI.ExportCompendiumZip",
+      icon: '<i class="fas fa-file-archive"></i>',
+      condition: (target) => Boolean(findPackFromTarget(target)),
+      callback: (target) => {
+        const pack = findPackFromTarget(target);
+        if (pack) void exportPackAsZip(pack);
+      },
+    });
+    return options;
+  };
+  (patched as { _t20Patched?: boolean })._t20Patched = true;
+  proto._getEntryContextOptions = patched;
+  console.log(`[${MODULE_ID}] CompendiumDirectory._getEntryContextOptions patched`);
 }
 
 function onFolderContextOptions(_app: unknown, options: DirectoryContextEntry[]): void {
@@ -68,21 +113,6 @@ function onFolderContextOptions(_app: unknown, options: DirectoryContextEntry[])
     callback: (target) => {
       const folder = findFolderFromTarget(target);
       if (folder) void exportFolderAsZip(folder);
-    },
-  });
-}
-
-function onCompendiumPackContextOptions(
-  _app: unknown,
-  options: DirectoryContextEntry[],
-): void {
-  options.push({
-    name: "T20PDF.UI.ExportCompendiumZip",
-    icon: '<i class="fas fa-file-archive"></i>',
-    condition: (target) => Boolean(findPackFromTarget(target)),
-    callback: (target) => {
-      const pack = findPackFromTarget(target);
-      if (pack) void exportPackAsZip(pack);
     },
   });
 }
