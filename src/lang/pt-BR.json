@@ -10,6 +10,7 @@
   "T20PDF.Settings.Template.ChoiceCompleta": "Completa (com fundo decorativo)",
   "T20PDF.Settings.Template.ChoiceImpressao": "Impressão (sem fundo, economiza tinta)",
   "T20PDF.UI.ExportFolderZip": "Exportar pasta (ZIP)",
+  "T20PDF.UI.ExportCompendiumZip": "Exportar compêndio (ZIP)",
   "T20PDF.Notify.ExportingFolder": "Compactando \"{name}\"…",
   "T20PDF.Notify.ExportedFolder": "Pasta \"{name}\" exportada.",
   "T20PDF.Notify.ExportFolderFailed": "Falha ao exportar pasta: {error}"

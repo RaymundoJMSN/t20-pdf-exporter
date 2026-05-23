@@ -1,14 +1,10 @@
 // ────────────────────────────────────────────────────────────────────
-// Bulk export — right-click a Folder (world or compendium) and export
-// every document inside it (and inside its subfolders, recursively) as
-// a ZIP file. The ZIP mirrors the folder hierarchy: each subfolder
-// becomes a directory in the archive, each document becomes a JSON
-// file named after the document, equivalent to Foundry's "Export Data"
-// on a single document.
-//
-// Works on Sidebar DocumentDirectory folders (Actors, Items, Journals,
-// Scenes, Macros, Playlists, RollTables, Cards) and on CompendiumDirectory
-// folders (folders inside compendium packs).
+// Bulk export — right-click a Folder (world or compendium) OR a
+// whole compendium pack and download every document inside (and
+// inside its subfolders, recursively) as a ZIP file. The ZIP mirrors
+// the folder hierarchy: each subfolder becomes a directory in the
+// archive, each document becomes a JSON file named after it,
+// equivalent to Foundry's "Export Data" on a single document.
 // ────────────────────────────────────────────────────────────────────
 
 import JSZip from "jszip";
@@ -21,12 +17,12 @@ interface DirectoryContextEntry {
   condition?: (target: HTMLElement) => boolean;
 }
 
-// Permissive shape — Foundry's Folder and Document classes aren't in
-// fvtt-types with enough detail for what we need.
+// Permissive shape — Foundry's Folder / Document / Compendium classes
+// aren't typed in fvtt-types with enough detail for what we need.
 type AnyDoc = {
   id: string;
   name: string | null;
-  folder?: { id: string } | null;
+  folder?: { id: string } | string | null;
   toObject: () => Record<string, unknown>;
 };
 
@@ -37,16 +33,31 @@ type AnyFolder = {
   type?: string;
   contents?: AnyDoc[];
   children?: Array<{ folder?: AnyFolder } | AnyFolder>;
+  // Compendium folders carry their parent folder id under `folder` like a doc would.
+  folder?: { id: string } | string | null;
 };
 
 type AnyPack = {
-  metadata?: { label?: string; name?: string };
+  collection?: string;
+  metadata?: { label?: string; name?: string; id?: string };
+  folders?: { get?: (id: string) => AnyFolder | undefined; contents?: AnyFolder[] };
   getDocuments: () => Promise<AnyDoc[]>;
 };
 
 export function registerBulkExport(): void {
+  // Folder right-click (both world DocumentDirectory and CompendiumDirectory
+  // folders). Single v13 hook.
   // @ts-expect-error fvtt-types doesn't narrow this hook to our handler shape
   Hooks.on("getFolderContextOptions", onFolderContextOptions);
+
+  // Compendium pack-level right-click. The ApplicationV2 CompendiumDirectory
+  // emits its own entry-context hook — name follows the
+  // `get${ApplicationName}EntryContext` convention. Register both the v13
+  // and legacy names so whichever Foundry build is loaded picks it up.
+  // @ts-expect-error fvtt-types may not list these hook keys
+  Hooks.on("getCompendiumDirectoryEntryContext", onCompendiumPackContextOptions);
+  // @ts-expect-error v13 V2-style alias
+  Hooks.on("getCompendiumDirectoryContextOptions", onCompendiumPackContextOptions);
 }
 
 function onFolderContextOptions(_app: unknown, options: DirectoryContextEntry[]): void {
@@ -61,23 +72,45 @@ function onFolderContextOptions(_app: unknown, options: DirectoryContextEntry[])
   });
 }
 
+function onCompendiumPackContextOptions(
+  _app: unknown,
+  options: DirectoryContextEntry[],
+): void {
+  options.push({
+    name: "T20PDF.UI.ExportCompendiumZip",
+    icon: '<i class="fas fa-file-archive"></i>',
+    condition: (target) => Boolean(findPackFromTarget(target)),
+    callback: (target) => {
+      const pack = findPackFromTarget(target);
+      if (pack) void exportPackAsZip(pack);
+    },
+  });
+}
+
 function findFolderFromTarget(target: HTMLElement): AnyFolder | null {
-  // v13 sidebar folder rows carry data-folder-id.
   const el = target.closest<HTMLElement>("[data-folder-id]");
   const id = el?.dataset.folderId;
   if (!id) return null;
-  // game.folders is the world-scope collection. For compendium folders we
-  // walk the pack-side folder tree.
   const worldFolder = game.folders?.get(id);
   if (worldFolder) return worldFolder as unknown as AnyFolder;
-  // Compendium folder fallback — find which pack the folder belongs to.
-  const packs = game.packs?.contents ?? [];
-  for (const pack of packs as AnyPack[]) {
-    // @ts-expect-error pack.folders is a Collection
-    const cf = pack.folders?.get?.(id) as AnyFolder | undefined;
+  const packs = (game.packs?.contents ?? []) as unknown as AnyPack[];
+  for (const pack of packs) {
+    const cf = pack.folders?.get?.(id);
     if (cf) return cf;
   }
   return null;
+}
+
+function findPackFromTarget(target: HTMLElement): AnyPack | null {
+  // Compendium pack rows carry `data-pack="moduleId.packName"` (v13 v2 sidebar).
+  // Some templates use `data-entry-id` with the pack collection — fall back.
+  const el =
+    target.closest<HTMLElement>("[data-pack]") ??
+    target.closest<HTMLElement>("[data-entry-id]");
+  if (!el) return null;
+  const collection = el.dataset.pack ?? el.dataset.entryId;
+  if (!collection) return null;
+  return (game.packs?.get(collection) as unknown as AnyPack | undefined) ?? null;
 }
 
 /** Replace path-unsafe characters; trim leading/trailing whitespace and dots. */
@@ -85,6 +118,37 @@ function safeFileName(name: string | null | undefined): string {
   const s = (name ?? "untitled").trim().replace(/[\\/:*?"<>|]+/g, "_");
   return s.replace(/^[.\s]+|[.\s]+$/g, "") || "untitled";
 }
+
+/** Download a blob using a name-bearing File wrapper. The File constructor
+ *  carries the filename in the URL's Content-Disposition equivalent, which
+ *  fixes the case where Electron-wrapped Chrome falls back to the blob's
+ *  UUID-shaped object-URL as the saved name even when `<a download>` is set. */
+function downloadBlobAs(blob: Blob, filename: string): void {
+  // Coerce to File so the object URL carries a name hint.
+  const file =
+    typeof File !== "undefined"
+      ? new File([blob], filename, { type: blob.type || "application/zip" })
+      : blob;
+  const url = URL.createObjectURL(file);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  // Use a real MouseEvent — some Electron builds ignore `.click()` on detached
+  // anchors. The synchronous append/click/remove dance works around it.
+  a.click();
+  // Defer cleanup so the click handler fully fires before the anchor is gone.
+  setTimeout(() => {
+    if (a.parentNode) a.parentNode.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1000);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Folder export
+// ────────────────────────────────────────────────────────────────────
 
 async function exportFolderAsZip(folder: AnyFolder): Promise<void> {
   const zip = new JSZip();
@@ -96,19 +160,11 @@ async function exportFolderAsZip(folder: AnyFolder): Promise<void> {
   );
 
   try {
-    // Resolve documents up-front for compendium folders (single API call per pack).
     const packDocsCache = new Map<string, AnyDoc[]>();
     await walkFolder(folder, root, packDocsCache);
 
     const blob = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${rootName}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    downloadBlobAs(blob, `${rootName}.zip`);
 
     ui.notifications?.info(
       game.i18n!.format("T20PDF.Notify.ExportedFolder", { name: folder.name ?? "" }),
@@ -127,36 +183,21 @@ async function walkFolder(
   zipFolder: JSZip,
   packDocsCache: Map<string, AnyDoc[]>,
 ): Promise<void> {
-  // Resolve documents in this folder.
   const docs = await getDocumentsInFolder(folder, packDocsCache);
   const usedNames = new Set<string>();
   for (const doc of docs) {
-    const baseName = safeFileName(doc.name);
-    let name = baseName;
-    let n = 1;
-    while (usedNames.has(name)) {
-      name = `${baseName} (${++n})`;
-    }
-    usedNames.add(name);
+    const fname = uniqueName(safeFileName(doc.name), usedNames);
     const json = JSON.stringify(doc.toObject(), null, 2);
-    zipFolder.file(`${name}.json`, json);
+    zipFolder.file(`${fname}.json`, json);
   }
 
-  // Recurse into children. Folder.children in v13 is typed differently
-  // across world/compendium folders; normalize both shapes.
   const children = (folder.children ?? []) as Array<{ folder?: AnyFolder } | AnyFolder>;
   const usedSubNames = new Set<string>();
   for (const childEntry of children) {
     const child = (childEntry as { folder?: AnyFolder }).folder ?? (childEntry as AnyFolder);
     if (!child || !child.id) continue;
-    const baseName = safeFileName(child.name);
-    let name = baseName;
-    let n = 1;
-    while (usedSubNames.has(name)) {
-      name = `${baseName} (${++n})`;
-    }
-    usedSubNames.add(name);
-    const childZip = zipFolder.folder(name);
+    const subName = uniqueName(safeFileName(child.name), usedSubNames);
+    const childZip = zipFolder.folder(subName);
     if (!childZip) continue;
     await walkFolder(child, childZip, packDocsCache);
   }
@@ -167,15 +208,113 @@ async function getDocumentsInFolder(
   cache: Map<string, AnyDoc[]>,
 ): Promise<AnyDoc[]> {
   if (folder.pack) {
-    // Compendium folder — pull all pack docs (cached) and filter by folder id.
     let all = cache.get(folder.pack);
     if (!all) {
       const pack = game.packs?.get(folder.pack) as unknown as AnyPack | undefined;
       all = pack ? await pack.getDocuments() : [];
       cache.set(folder.pack, all);
     }
-    return all.filter((d) => d.folder?.id === folder.id);
+    return all.filter((d) => docFolderId(d) === folder.id);
   }
-  // World folder — contents is already populated.
   return folder.contents ?? [];
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Compendium pack export — whole pack including its folder tree
+// ────────────────────────────────────────────────────────────────────
+
+async function exportPackAsZip(pack: AnyPack): Promise<void> {
+  const label = pack.metadata?.label ?? pack.metadata?.name ?? "compendium";
+  const rootName = safeFileName(label);
+  const zip = new JSZip();
+  const root = zip.folder(rootName) ?? zip;
+
+  ui.notifications?.info(
+    game.i18n!.format("T20PDF.Notify.ExportingFolder", { name: label }),
+  );
+
+  try {
+    const allDocs = await pack.getDocuments();
+
+    // Build folder lookup + a list of root-level folders (no parent).
+    const allFolders = (pack.folders?.contents ?? []) as AnyFolder[];
+    const childrenByParent = new Map<string | null, AnyFolder[]>();
+    for (const f of allFolders) {
+      const parentId = folderParentId(f);
+      const arr = childrenByParent.get(parentId) ?? [];
+      arr.push(f);
+      childrenByParent.set(parentId, arr);
+    }
+
+    const docsByFolder = new Map<string | null, AnyDoc[]>();
+    for (const d of allDocs) {
+      const fid = docFolderId(d);
+      const arr = docsByFolder.get(fid) ?? [];
+      arr.push(d);
+      docsByFolder.set(fid, arr);
+    }
+
+    // Recursively populate the zip from the virtual root (parentId === null).
+    writePackNode(root, null, childrenByParent, docsByFolder);
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    downloadBlobAs(blob, `${rootName}.zip`);
+
+    ui.notifications?.info(
+      game.i18n!.format("T20PDF.Notify.ExportedFolder", { name: label }),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[${MODULE_ID}] compendium export failed`, err);
+    ui.notifications?.error(
+      game.i18n!.format("T20PDF.Notify.ExportFolderFailed", { error: msg }),
+    );
+  }
+}
+
+function writePackNode(
+  zipFolder: JSZip,
+  parentId: string | null,
+  childrenByParent: Map<string | null, AnyFolder[]>,
+  docsByFolder: Map<string | null, AnyDoc[]>,
+): void {
+  // Documents directly under this node.
+  const usedFiles = new Set<string>();
+  for (const d of docsByFolder.get(parentId) ?? []) {
+    const fname = uniqueName(safeFileName(d.name), usedFiles);
+    zipFolder.file(`${fname}.json`, JSON.stringify(d.toObject(), null, 2));
+  }
+  // Subfolders.
+  const usedDirs = new Set<string>();
+  for (const child of childrenByParent.get(parentId) ?? []) {
+    const dirName = uniqueName(safeFileName(child.name), usedDirs);
+    const sub = zipFolder.folder(dirName);
+    if (!sub) continue;
+    writePackNode(sub, child.id, childrenByParent, docsByFolder);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Tiny utility — id extraction that tolerates both shapes Foundry uses
+// (string id or {id: string} object) for `.folder` parent refs.
+// ────────────────────────────────────────────────────────────────────
+
+function docFolderId(d: AnyDoc): string | null {
+  const f = d.folder;
+  if (!f) return null;
+  return typeof f === "string" ? f : (f.id ?? null);
+}
+
+function folderParentId(f: AnyFolder): string | null {
+  const p = f.folder;
+  if (!p) return null;
+  return typeof p === "string" ? p : (p.id ?? null);
+}
+
+function uniqueName(base: string, used: Set<string>): string {
+  let name = base;
+  let n = 1;
+  while (used.has(name)) name = `${base} (${++n})`;
+  used.add(name);
+  return name;
 }
