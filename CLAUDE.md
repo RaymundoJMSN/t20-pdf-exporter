@@ -43,25 +43,6 @@ src/
     settings.ts       registerSettings() + getTemplateSetting(). Registers one world-scope client setting
                       `t20-pdf-exporter.pdfTemplate` ("completa" | "impressao", default "completa") that
                       shows up in Game Settings → Configure Settings → Tormenta 20 — Exportador de PDF.
-    bulk-export.ts    registerBulkExport(). Adds two ZIP-export entries to the sidebar context menus:
-                      - "Exportar pasta (ZIP)" on every folder via `getFolderContextOptions`
-                        (single v13 hook covering both world DocumentDirectory and
-                        CompendiumDirectory folders).
-                      - "Exportar compêndio (ZIP)" on every compendium pack — added by
-                        monkey-patching `foundry.applications.sidebar.tabs.CompendiumDirectory
-                        .prototype._getEntryContextOptions`. Foundry v13 does NOT fire a hook
-                        for pack-row right-clicks (tried `getCompendiumDirectoryEntryContext` and
-                        `getCompendiumDirectoryContextOptions` — neither emits); the only stable
-                        way to extend that menu is to wrap the protected method. The patch runs
-                        on the `setup` hook (before CompendiumDirectory is instantiated) and is
-                        idempotent (tagged with `_t20Patched` so HMR/double-load doesn't stack).
-                      Walks the relevant tree, serializes each document with `doc.toObject()` into
-                      one JSON file, and mirrors the folder hierarchy as ZIP directories. For pack
-                      export the folder tree is rebuilt from `pack.folders.contents[]` using each
-                      folder's `.folder` parent reference. Documents and folder ids cached per pack.
-                      Downloads via `downloadBlobAs(blob, filename)` — wraps the blob in a `File`
-                      object so the Electron Save-As dialog uses the real filename instead of the
-                      blob URL's UUID. ZIP name = root folder name (or `pack.metadata.label`).
     ui.ts             registerUI(). Hooks:
                        - getActorSheetHeaderButtons → sheet header "Exportar PDF" button.
                        - getActorContextOptions    → v13 sidebar right-click entry. NOT getActorDirectoryEntryContext
@@ -234,19 +215,6 @@ Known gaps (intentional MVP):
 - Ofício composto: we union the 6 sub-skills into one line — won't show separate trained sub-perícias.
 - Weapon attack bonus assumes the skill atributo is the canonical one for that skill (luta→for, pontaria→des). Doesn't honor character-level skill atributo overrides via `actor.system.pericias[skill].atributo` overrides set by GMs.
 
-## Bulk-export folders (companion feature)
-
-Distinct from the PDF export pipeline. Right-click any sidebar/compendium folder OR any compendium pack → "Exportar pasta (ZIP)" / "Exportar compêndio (ZIP)" → downloads a ZIP that mirrors the folder hierarchy, with each document serialized to a JSON file (same shape as Foundry's per-document "Exportar Dados"). Subfolders become ZIP subdirectories recursively. Implemented in [src/scripts/bulk-export.ts](src/scripts/bulk-export.ts):
-- Folder right-click uses `getFolderContextOptions` (single v13 hook for both `DocumentDirectory` and `CompendiumDirectory` folders).
-- Compendium pack right-click is added by **monkey-patching** `foundry.applications.sidebar.tabs.CompendiumDirectory.prototype._getEntryContextOptions` on the `setup` hook. v13 doesn't emit a usable Hook for that menu (verified empirically — both `getCompendiumDirectoryEntryContext` and `getCompendiumDirectoryContextOptions` are silent). The patch wraps Foundry's original return array and appends our entry; tagged with a `_t20Patched` marker so HMR/reload doesn't stack duplicates.
-- Pack export reads `pack.folders.contents[]` for the folder tree and rebuilds it via each folder's `.folder` parent reference, then groups `pack.getDocuments()` by `doc.folder`.
-
-Implementation notes:
-- File names are derived from `doc.name`; collisions inside the same folder get a `(2)`, `(3)` suffix. Path-unsafe characters (`\\ / : * ? " < > |`) are replaced with `_`.
-- `downloadBlobAs(blob, filename)` uses the **File System Access API** (`window.showSaveFilePicker`) as the primary path. Foundry's Electron build intercepts blob-URL downloads and renames them to the blob URL's UUID; the `<a download>` attribute is silently ignored for binary blobs (Foundry's own per-document Export Data only works because the underlying Blob comes from a tiny JSON string — different Electron code path). `showSaveFilePicker` bypasses that interceptor and opens a native Save As dialog pre-filled with the correct filename. AbortError = user cancelled, swallowed silently. Anchor + `download` attribute remains as a fallback for environments where the FS Access API is missing.
-
-> The module id is still `t20-pdf-exporter` (named when the only feature was the PDF builder). The bulk-export feature is system-agnostic. If we ever add more general-purpose features, consider renaming — but renaming breaks the junction, every existing user's setting key, and the Foundry installation flow.
-
 ## What's intentionally out of scope (for now)
 
 - NPC export.
@@ -256,6 +224,7 @@ Implementation notes:
 - v11/v12 compatibility.
 - CSS / custom dialog UI (no styles yet).
 - Custom PDF templates picked at runtime by GM. We always use the bundled `sheet.pdf` / `sheet-print.pdf`.
+- Bulk JSON/ZIP export. Moved to separate module: `foundry-bulk-exporter`.
 
 If the user asks to add any of the above, treat it as a new scope decision — don't smuggle generic abstractions in early to "leave room" for them.
 
