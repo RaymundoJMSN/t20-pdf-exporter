@@ -2,7 +2,7 @@
 
 Foundry VTT module that exports player characters from the **Tormenta 20** system (`tormenta20`) to PDF by filling an AcroForm template of the official-style sheet, so players can keep an offline copy.
 
-> Keep this file current. The user (Yuri) expects future sessions to be able to orient from CLAUDE.md alone — when you add a file, change a path, install a dependency, change the workflow, or make a non-obvious decision, update the relevant section here in the same change. Treat stale CLAUDE.md as a bug.
+> Keep this file current. The user (RaymundoJMSN) expects future sessions to be able to orient from CLAUDE.md alone — when you add a file, change a path, install a dependency, change the workflow, or make a non-obvious decision, update the relevant section here in the same change. Treat stale CLAUDE.md as a bug.
 
 ## Target
 
@@ -231,11 +231,11 @@ If the user asks to add any of the above, treat it as a new scope decision — d
 ## Credits
 
 - **PDF template + form field naming:** [`gerador-ficha-tormenta20`](https://github.com/devsacanorpg/gerador-ficha-tormenta20) (MIT).
-- **Initial filling logic:** adapted from the standalone `T20-DB` PDF exporter (also Yuri's project, at `E:\rayna\Documents\Claude\Projects\Ideias e RPG\T20-DB\dist-pdf-exportador\`). That version assumed a database-shaped `PersonagemCompleto` with IDs resolved via API. This module reads denormalized Foundry actor data directly, so the `ApiPDF` interface is gone.
+- **Initial filling logic:** adapted from the standalone `T20-DB` PDF exporter (also RaymundoJMSN's project, at `E:\rayna\Documents\Claude\Projects\Ideias e RPG\T20-DB\dist-pdf-exportador\`). That version assumed a database-shaped `PersonagemCompleto` with IDs resolved via API. This module reads denormalized Foundry actor data directly, so the `ApiPDF` interface is gone.
 
 ## Working with this repo
 
-- The user (Yuri, yuri@lupalina.com.br, GitHub `RaymundoJMSN`) speaks Portuguese (pt-BR). Default chat to pt-BR. Code and commit messages in English.
+- The user (GitHub `RaymundoJMSN`, raimundojmdsn@gmail.com) speaks Portuguese (pt-BR). Default chat to pt-BR. Code and commit messages in English.
 - Foundry's API shifts between versions. Before writing against a hook, class, or method, verify it exists in v13 — check `fvtt-types`, the Foundry API docs at https://foundryvtt.com/api/, or the running app in DevTools. Don't trust pre-v13 examples from the web without confirming.
 - The Tormenta 20 system's data schema lives in its own repo. When you need to know what fields exist on `actor.system`, inspect a live character in a Foundry world (`game.actors.getName(...).system` in the console) or have the user export an actor as JSON via the sidebar context menu.
 - The user already approved the broad shape of this project (Foundry v13, Vite+TS, MIT, public GitHub, three export entry points, pdf-lib + sheet template). Don't re-ask those.

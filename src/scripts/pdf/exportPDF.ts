@@ -464,7 +464,7 @@ const OVERFLOW_RECT = { x: 35.5, y: 43.3, x2: 536.8, y2: 717.0 };
 // different from the main one.
 const POD_MAG_FONT_SIZE = 14;
 // Max visual lines that fit one Historico/Atualização page at
-// POD_MAG_FONT_SIZE. Measured by Yuri against the rendered ficha. Chunking
+// POD_MAG_FONT_SIZE. Measured empirically against the rendered ficha. Chunking
 // always honors source-line boundaries — a chunk never ends mid sentence.
 const POD_MAG_LINES_PER_PAGE = 40;
 // Horizontal padding inside the field rect when measuring wrap width.
