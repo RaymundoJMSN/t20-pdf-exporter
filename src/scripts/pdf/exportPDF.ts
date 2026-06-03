@@ -382,10 +382,16 @@ function formatArma(item: FoundryItemLike, sys: AnyRec, nivel: number): ArmaSumm
     const trained = periciaTreinada(sys, skillKey);
     const outrosNode = (sys.pericias as AnyRec | undefined)?.[skillKey] as AnyRec | undefined;
     const outros = typeof outrosNode?.outros === "number" ? outrosNode.outros : 0;
-    // Attack bonus = attribute + half-level (if trained) + outros on the skill.
-    // Weapon-specific roll modifiers (parts[2], e.g. exotic penalty) are NOT
-    // included — the sheet shows competence, not weapon quirks.
-    const total = atrMod + (trained ? meioNivel(nivel) : 0) + outros;
+    // Prefer the runtime-computed skill value (Foundry T20 system already
+    // accounts for all bonuses, effects, etc.). Fall back to manual formula
+    // only when value is 0 (e.g. static JSON export).
+    const runtimeValue =
+      typeof outrosNode?.value === "number" && outrosNode.value !== 0
+        ? outrosNode.value
+        : atrMod + (trained ? meioNivel(nivel) : 0) + outros;
+    // Include parts[2] weapon-specific modifier (exotic penalty, enchantment…).
+    const weaponBonus = Number(parts[2]?.[0] ?? 0) || 0;
+    const total = runtimeValue + weaponBonus;
     ataqueStr = total >= 0 ? `+${total}` : String(total);
   }
 
@@ -871,8 +877,18 @@ export async function buildAndOpenPDF(
   setText(form, "vidaMax", String(pickNumber(sys, "attributes", "pv", "max")));
   setText(form, "manaMax", String(pickNumber(sys, "attributes", "pm", "max")));
   setText(form, "Texto13", String(pickNumber(sys, "attributes", "defesa", "value") || 10));
-  const defesaOutros = pickNumber(sys, "attributes", "defesa", "outros");
-  if (defesaOutros) setText(form, "defesaOutros", String(defesaOutros));
+  // defesaOutros = manually typed outros + effect-based bonus[] sum.
+  // T20 active effects (Pele de Ferro, Carapaça, etc.) go into defesa.bonus[],
+  // not defesa.outros, so we sum both.
+  const defNode = (sys.attributes as AnyRec | undefined)?.defesa as AnyRec | undefined;
+  const defesaOutrosManual = typeof defNode?.outros === "number" ? defNode.outros : 0;
+  const defesaBonusArr = Array.isArray(defNode?.bonus) ? (defNode!.bonus as unknown[]) : [];
+  const defesaBonusSum = defesaBonusArr.reduce(
+    (s: number, v: unknown) => s + (typeof v === "number" ? v : 0),
+    0,
+  );
+  const defesaOutrosTotal = defesaOutrosManual + defesaBonusSum;
+  if (defesaOutrosTotal) setText(form, "defesaOutros", String(defesaOutrosTotal));
   setText(form, "metadeDoNivel", String(meioNivel(nivel)));
   setDropdown(form, "modDef", "des");
 
