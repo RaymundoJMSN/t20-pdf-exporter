@@ -320,6 +320,9 @@ const ATAQUE_ALCANCE: Record<string, string> = {
   medio: "Médio",
   longo: "Longo",
   curt: "Curto",
+  short: "Curto",
+  medium: "Médio",
+  long: "Longo",
 };
 
 const DANO_TIPO: Record<string, string> = {
@@ -877,18 +880,6 @@ export async function buildAndOpenPDF(
   setText(form, "vidaMax", String(pickNumber(sys, "attributes", "pv", "max")));
   setText(form, "manaMax", String(pickNumber(sys, "attributes", "pm", "max")));
   setText(form, "Texto13", String(pickNumber(sys, "attributes", "defesa", "value") || 10));
-  // defesaOutros = manually typed outros + effect-based bonus[] sum.
-  // T20 active effects (Pele de Ferro, Carapaça, etc.) go into defesa.bonus[],
-  // not defesa.outros, so we sum both.
-  const defNode = (sys.attributes as AnyRec | undefined)?.defesa as AnyRec | undefined;
-  const defesaOutrosManual = typeof defNode?.outros === "number" ? defNode.outros : 0;
-  const defesaBonusArr = Array.isArray(defNode?.bonus) ? (defNode!.bonus as unknown[]) : [];
-  const defesaBonusSum = defesaBonusArr.reduce(
-    (s: number, v: unknown) => s + (typeof v === "number" ? v : 0),
-    0,
-  );
-  const defesaOutrosTotal = defesaOutrosManual + defesaBonusSum;
-  if (defesaOutrosTotal) setText(form, "defesaOutros", String(defesaOutrosTotal));
   setText(form, "metadeDoNivel", String(meioNivel(nivel)));
   setDropdown(form, "modDef", "des");
 
@@ -1037,6 +1028,27 @@ export async function buildAndOpenPDF(
     setText(form, `defesa${n}`, s.defesa);
     setText(form, `penalidade${n}`, s.penalidade);
   });
+
+  // 6e) defesaOutros — reverse-computed after armaduras are known.
+  // Formula: defesa.value - 10 (base) - attrMod (skipped for heavy armor) - armorDefSum
+  // Heavy armor (pes/pesada) doesn't add DEX to defense, so we don't subtract it.
+  {
+    const defTotal = pickNumber(sys, "attributes", "defesa", "value");
+    if (defTotal > 0) {
+      const defAttr = (pickString(sys, "attributes", "defesa", "atributo") || "des") as Atr;
+      const hasHeavy = armaduras.some((i) => {
+        const t = pickString((i.system ?? {}) as AnyRec, "tipo");
+        return t === "pes" || t === "pesada";
+      });
+      const attrContrib = hasHeavy ? 0 : atributoTotal(sys, defAttr);
+      const armorDefSum = armaduras.reduce((s, i) => {
+        const armNode = ((i.system ?? {}) as AnyRec).armadura as AnyRec | undefined;
+        return s + (typeof armNode?.value === "number" ? armNode.value : 0);
+      }, 0);
+      const defesaOutrosVal = defTotal - 10 - attrContrib - armorDefSum;
+      if (defesaOutrosVal > 0) setText(form, "defesaOutros", String(defesaOutrosVal));
+    }
+  }
 
   // 7) Perícias (29 linhas; template has typo `tota23` at index 22)
   PERICIAS.forEach((row, idx) => {
