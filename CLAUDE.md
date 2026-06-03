@@ -131,11 +131,14 @@ Foundry only scans `Data/modules/` at process start — after creating the junct
 
 **IMPORTANT: always run `npm run build` after every code change before testing in Foundry.** `dist/module.js` is what Foundry loads — if it's stale, nothing changes no matter how many F5s or restarts.
 
+**IMPORTANT: after every coding session, commit and push all changes to `main`.** Never leave work uncommitted.
+
 1. After editing `src/`: `npm run build` → then F5 in Foundry.
 2. Or use `npm run dev` (Vite watch) — rebuilds automatically on every save, then F5 in Foundry.
 3. **F12** opens DevTools. Module logs `t20-pdf-exporter | init` and `| ready` on every world load.
 4. F5 is NOT enough when you change `module.json`, `lang/*.json`, or anything Foundry reads at boot — for those, return to Setup and re-enter the world.
 5. Templates (`assets/templates/*.pdf`) are fetched at runtime via relative URL `modules/t20-pdf-exporter/assets/templates/...`. They are NOT bundled into `dist/`. If you swap a template, no rebuild is needed — just F5.
+6. End of session checklist: `npm run build` → `git add` changed files → `git commit` → `git push origin main`.
 
 To inspect a live actor's schema in the console:
 
