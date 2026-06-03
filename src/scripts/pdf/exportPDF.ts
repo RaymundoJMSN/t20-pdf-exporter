@@ -370,7 +370,6 @@ function formatArma(item: FoundryItemLike, sys: AnyRec, nivel: number): ArmaSumm
   if (atkRoll) {
     const parts = Array.isArray(atkRoll.parts) ? (atkRoll.parts as unknown[][]) : [];
     const skillKey = String(parts[1]?.[0] ?? "luta");
-    const bonus = Number(parts[2]?.[0] ?? 0) || 0;
     // Skill atributo lookup via PERICIAS table (luta→for, pontaria→des).
     const skillAtr: Atr =
       skillKey === "pontaria"
@@ -380,8 +379,13 @@ function formatArma(item: FoundryItemLike, sys: AnyRec, nivel: number): ArmaSumm
           : (((sys.pericias as AnyRec | undefined)?.[skillKey] as AnyRec | undefined)
               ?.atributo as Atr) ?? "for";
     const atrMod = atributoTotal(sys, skillAtr);
-    const treino = periciaTreinada(sys, skillKey) ? bonusTreinoT20(nivel) : 0;
-    const total = meioNivel(nivel) + atrMod + treino + bonus;
+    const trained = periciaTreinada(sys, skillKey);
+    const outrosNode = (sys.pericias as AnyRec | undefined)?.[skillKey] as AnyRec | undefined;
+    const outros = typeof outrosNode?.outros === "number" ? outrosNode.outros : 0;
+    // Attack bonus = attribute + half-level (if trained) + outros on the skill.
+    // Weapon-specific roll modifiers (parts[2], e.g. exotic penalty) are NOT
+    // included — the sheet shows competence, not weapon quirks.
+    const total = atrMod + (trained ? meioNivel(nivel) : 0) + outros;
     ataqueStr = total >= 0 ? `+${total}` : String(total);
   }
 
@@ -864,11 +868,13 @@ export async function buildAndOpenPDF(
   });
 
   // 4) PV / PM / Defesa / metade do nível
-  setText(form, "vidaMax", String(pickNumber(sys, "attributes", "pv", "value")));
-  setText(form, "manaMax", String(pickNumber(sys, "attributes", "pm", "value")));
+  setText(form, "vidaMax", String(pickNumber(sys, "attributes", "pv", "max")));
+  setText(form, "manaMax", String(pickNumber(sys, "attributes", "pm", "max")));
   setText(form, "Texto13", String(pickNumber(sys, "attributes", "defesa", "value") || 10));
+  const defesaOutros = pickNumber(sys, "attributes", "defesa", "outros");
+  if (defesaOutros) setText(form, "defesaOutros", String(defesaOutros));
   setText(form, "metadeDoNivel", String(meioNivel(nivel)));
-  setDropdown(form, "modDef", "modDes");
+  setDropdown(form, "modDef", "des");
 
   // 5) Deslocamento (terrestre + extras)
   const mv = (sys.attributes as AnyRec | undefined)?.movement as AnyRec | undefined;
@@ -893,9 +899,10 @@ export async function buildAndOpenPDF(
   const cargaLimit = pickNumber(cargaNode, "limit");
   const cargaMax = pickNumber(cargaNode, "max");
   if (cargaValue || cargaLimit || cargaMax) {
+    const cargaMaxDisplay = cargaLimit || cargaMax;
     setText(form, "cargaAtual", String(cargaValue));
-    setText(form, "cargaMaxima", String(cargaLimit || cargaMax));
-    setText(form, "levantar", String(cargaMax * 2 || cargaLimit * 4));
+    setText(form, "cargaMaxima", String(cargaMaxDisplay));
+    setText(form, "levantar", String(cargaMaxDisplay * 2));
   } else {
     const forVal = atributoTotal(sys, "for");
     const fallbackMax = 5 + Math.max(0, forVal);
@@ -989,8 +996,8 @@ export async function buildAndOpenPDF(
   const armaSummaries = armas.slice(0, 5).map((i) => formatArma(i as unknown as FoundryItemLike, sys, nivel));
   armaSummaries.forEach((s, idx) => {
     const n = idx + 1;
-    setText(form, `tAtak${n}`, sanitize(s.nome));
-    setText(form, `ataque${n}`, s.ataque);
+    setText(form, `ataque${n}`, sanitize(s.nome));
+    setText(form, `tAtak${n}`, s.ataque);
     setText(form, `dano${n}`, sanitize(s.dano));
     setText(form, `critico${n}`, s.critico);
     setText(form, `alcance${n}`, sanitize(s.alcance));
@@ -1023,7 +1030,7 @@ export async function buildAndOpenPDF(
     setText(form, totalField, String(total));
     setText(form, `treino${idx}`, String(training));
     setText(form, `outros${idx + 1}`, "0");
-    setDropdown(form, `modSelect${idx}`, ATR_FIELD[row.atr]);
+    setDropdown(form, `modSelect${idx}`, row.atr);
     setCheckBox(form, `treinado${idx + 1}`, treinada);
   });
 
@@ -1098,11 +1105,17 @@ export async function buildAndOpenPDF(
   // 3 pages: 0=header, 1=poderes (Historico), 2=magias (Atualização).
   // Order: poderes overflow FIRST (so we know how many pages it added before
   // computing where magias sits), then magias overflow appended after that.
+  //
+  // If there are no magias, remove the magias page entirely — no blank 3rd page.
   const podTplFile = template === "impressao" ? "sheet-print_poderes.pdf" : "sheet_poderes.pdf";
   const magTplFile = template === "impressao" ? "sheet-print_magias.pdf" : "sheet_magias.pdf";
 
   const PODERES_PAGE_IDX = 1;
   const MAGIAS_PAGE_IDX = 2;
+
+  if (magias.length === 0) {
+    pdfDoc.removePage(MAGIAS_PAGE_IDX);
+  }
 
   let podPagesAdded = 0;
   if (podOverflow.trim()) {

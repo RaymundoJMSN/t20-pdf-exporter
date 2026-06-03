@@ -129,8 +129,10 @@ Foundry only scans `Data/modules/` at process start — after creating the junct
 
 ## Dev workflow
 
-1. Terminal in the repo: `npm run dev` — Vite watches `src/`, rebuilds `dist/module.js` on save.
-2. In Foundry, inside a world running `tormenta20`, after a code change: **F5** reloads the world and picks up the new bundle.
+**IMPORTANT: always run `npm run build` after every code change before testing in Foundry.** `dist/module.js` is what Foundry loads — if it's stale, nothing changes no matter how many F5s or restarts.
+
+1. After editing `src/`: `npm run build` → then F5 in Foundry.
+2. Or use `npm run dev` (Vite watch) — rebuilds automatically on every save, then F5 in Foundry.
 3. **F12** opens DevTools. Module logs `t20-pdf-exporter | init` and `| ready` on every world load.
 4. F5 is NOT enough when you change `module.json`, `lang/*.json`, or anything Foundry reads at boot — for those, return to Setup and re-enter the world.
 5. Templates (`assets/templates/*.pdf`) are fetched at runtime via relative URL `modules/t20-pdf-exporter/assets/templates/...`. They are NOT bundled into `dist/`. If you swap a template, no rebuild is needed — just F5.
@@ -175,11 +177,11 @@ Templates inherit from the [`gerador-ficha-tormenta20`](https://github.com/devsa
 
 - Header: `Nome`, `Raca`, `Classe`, `Origem`, `Divindade`.
 - Atributos: `modFor/Des/Con/Int/Sab/Car` (modifier with sign).
-- Combat block: `vidaMax`, `manaMax`, `Texto13` (defesa), `metadeDoNivel`, dropdown `modDef` defaulted to `modDes`.
+- Combat block: `vidaMax` (`pv.max`), `manaMax` (`pm.max`), `Texto13` (defesa), `metadeDoNivel`, dropdown `modDef` defaulted to `modDes`.
 - `deslocamento` (base walk + extras).
 - Carga: `cargaAtual`, `cargaMaxima`, `levantar`. Read from `actor.system.attributes.carga.{value, limit, max}` at runtime. `levantar` = `max × 2` per T20.
 - Inventário: two text boxes `item1` and `item2`. Source = `equipamento` (excluding armor) + `consumivel` + `tesouro`, each section prefixed by a heading line ("Equipamentos:" / "Consumíveis:" / "Tesouros e Itens:"). Armas go to dedicated ataque slots, armaduras to armadura slots. **Split by LINE, not by char** — fills `item1` until either 24 lines or 950 chars (whichever first), then `item2` under the same caps. Whatever doesn't fit spills to the annex page "Continuação do inventário". Avoids mid-word cuts.
-- Armas (até 5): `tAtak{N}` (nome), `ataque{N}` (+bônus computado), `dano{N}` (formula com `@for/@des/...` resolvido), `critico{N}` ("19/x2"), `alcance{N}` (Curto/Médio/Longo/—), `tipo{N}` (Impacto/Corte/Perfuração/Cura PV/elemental). Bônus de ataque = `meio_nivel + atributoMod(skillAtr) + treinamento(skillKey) + bonus_da_rolagem`. `skillKey` vem de `item.system.rolls[].parts[1]` (luta/pontaria/etc); `skillAtr` mapeia via `pericias[skillKey].atributo` (luta→for, pontaria→des).
+- Armas (até 5): `ataque{N}` (nome da arma — coluna "Ataque"), `tAtak{N}` (+bônus de ataque — coluna "Teste de Ataque"), `dano{N}` (formula com `@for/@des/...` resolvido), `critico{N}` ("19/x2"), `alcance{N}` (Curto/Médio/Longo/—), `tipo{N}` (Impacto/Corte/Perfuração/Cura PV/elemental). Bônus de ataque = `atributoMod(skillAtr) + meioNivel(nivel, se treinada) + pericias[skillKey].outros`. Penalidades/bônus intrínsecos da arma (parts[2], ex.: -2 exótica) NÃO são incluídos — campo mostra competência do personagem. `skillKey` vem de `item.system.rolls[].parts[1]` (luta/pontaria/etc); `skillAtr` mapeia via `pericias[skillKey].atributo` (luta→for, pontaria→des).
 - Armaduras (até 2): `armadura{N}` (nome), `defesa{N}` (`item.system.armadura.value`), `penalidade{N}` (`item.system.armadura.penalidade`). Filtro: `equipamento.system.tipo ∈ {leve, pes, pesada, esc, escudo}`.
 - Perícias: 29 rows, alphabetical. Per row index N (0-based):
   - Total: `total{N+1}` (template has a typo `tota23` at N=22 — handled).
@@ -206,6 +208,7 @@ Form-field text in the template clips around `MAIN_FIELD_CAP` (3000 chars) even 
 - **Fixed font size 14pt** (`POD_MAG_FONT_SIZE`) on both main and overflow Historico/Atualização — no auto-shrinking — so a printed character with many poderes/magias sees the same text size across every page. Newly-created overflow fields need a `/DA` (default appearance) entry seeded before `setFontSize`; otherwise pdf-lib throws "No /DA entry found". `forceFontSize(field, size)` tries `setFontSize` and, on failure, seeds `/Helv {size} Tf 0 0 0 rg` then retries.
 - Width measurement uses pdf-lib's embedded `StandardFonts.Helvetica` widths. The PDF viewer (Foundry/PDF.js, Chrome, Acrobat) may render its own Helvetica with slightly different metrics, so `POD_MAG_INNER_PADDING` (8pt of inset on each side of the rect) leaves a safety margin. If users still report content cut at the bottom, lower `POD_MAG_LINES_PER_PAGE`; if they report wasted whitespace, raise it.
 - Insertion order: **poderes first** (after the main poderes page at index 1), then magias appended after the original magias page at index `2 + podPagesAdded`. This keeps the visual order header → poderes → poderes-overflow* → magias → magias-overflow*.
+- **Magias page removal**: if `magias.length === 0`, `pdfDoc.removePage(MAGIAS_PAGE_IDX)` is called before any overflow insertion. The blank 3rd page is dropped entirely.
 
 **Inventário & armas extras — plain annex pages.**
 There's no dedicated overflow template for these, so they still use `appendAnnexPages(pdfDoc, title, body)` — plain A4 pages with Helvetica text drawn from a top-left margin. These are always appended *last* (after any poderes/magias overflow). If you ever want a decorative inventory overflow page, add a `sheet_inventario.pdf` (+ print variant) and follow the poderes/magias pattern.
