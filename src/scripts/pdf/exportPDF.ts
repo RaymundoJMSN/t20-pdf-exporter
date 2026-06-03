@@ -410,6 +410,9 @@ function formatArma(item: FoundryItemLike, sys: AnyRec, nivel: number): ArmaSumm
       const t = String(p?.[1] ?? "").trim();
       if (!expr) continue;
       const resolved = resolveAttrTokens(expr, sys);
+      // Skip T20 keyword placeholders (e.g. "padrao") that don't resolve to
+      // a numeric expression — they have no digits after token substitution.
+      if (!/\d/.test(resolved)) continue;
       danoBits.push(resolved);
       if (t && !tipoStr) tipoStr = lookupOrTitle(DANO_TIPO, t);
     }
@@ -870,6 +873,13 @@ export async function buildAndOpenPDF(
 
   setText(form, "Origem", sanitize(pickString(sys, "detalhes", "origem")));
   setText(form, "Divindade", sanitize(pickString(sys, "detalhes", "divindade")));
+
+  // 2b) Dinheiro (TO = ouro, T$ = prata; template only exposes these two fields)
+  const din = sys.dinheiro as AnyRec | undefined;
+  const dinTO = typeof din?.to === "number" ? din.to : 0;
+  const dinTP = typeof din?.tp === "number" ? din.tp : 0;
+  if (dinTO) setText(form, "TO", String(dinTO));
+  if (dinTP) setText(form, "T$", String(dinTP));
 
   // 3) Atributos
   (["for", "des", "con", "int", "sab", "car"] as Atr[]).forEach((a) => {
